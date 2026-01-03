@@ -11,7 +11,6 @@ from PIL import Image
 from tqdm import tqdm
 import logging
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -139,7 +138,7 @@ class CLIPFeatureExtractor:
             
             # Save features
             np.save(output_path, features)
-            logger.info(f"Saved features for {video_id}: shape {features.shape}")
+            logger.debug(f"Saved features for {video_id}: shape {features.shape}")
             return True
             
         except Exception as e:

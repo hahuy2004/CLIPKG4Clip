@@ -8,7 +8,6 @@ from pathlib import Path
 from tqdm import tqdm
 import logging
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -86,7 +85,7 @@ class FrameExtractor:
                 frame_count += 1
             
             cap.release()
-            logger.info(f"Extracted {saved_count} frames from {video_path.name}")
+            logger.debug(f"Extracted {saved_count} frames from {video_path.name}")
             return saved_count
             
         except Exception as e:

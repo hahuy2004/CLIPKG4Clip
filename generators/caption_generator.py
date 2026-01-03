@@ -11,7 +11,6 @@ from tqdm import tqdm
 import logging
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -159,7 +158,7 @@ class CaptionGenerator:
                 
                 logger.debug(f"{video_id} segment [{start_frame}-{end_frame}]: {caption}")
             
-            logger.info(f"Generated {len(captions)} captions for {video_id}")
+            logger.debug(f"Generated {len(captions)} captions for {video_id}")
             return captions
             
         except Exception as e:

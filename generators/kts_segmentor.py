@@ -9,7 +9,6 @@ from pathlib import Path
 from tqdm import tqdm
 import logging
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -191,7 +190,7 @@ class KTSSegmentor:
             with open(output_path, 'w') as f:
                 json.dump(output_data, f, indent=2)
             
-            logger.info(f"Segmented {video_id} into {len(segments)} events")
+            logger.debug(f"Segmented {video_id} into {len(segments)} events")
             return segments
             
         except Exception as e:
