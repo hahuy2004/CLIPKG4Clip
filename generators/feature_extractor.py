@@ -145,12 +145,13 @@ class CLIPFeatureExtractor:
             logger.error(f"Error processing {video_id}: {str(e)}")
             return False
     
-    def process_dataset(self, skip_existing=True):
+    def process_dataset(self, skip_existing=True, whitelist_video_ids=None):
         """
         Process all videos in the dataset.
         
         Args:
             skip_existing: Skip videos that already have features
+            whitelist_video_ids: Set of video IDs to process (None = process all)
             
         Returns:
             Dictionary with processing statistics
@@ -168,11 +169,17 @@ class CLIPFeatureExtractor:
         
         logger.info(f"Found {len(video_dirs)} videos to process")
         
-        stats = {'processed': 0, 'skipped': 0, 'failed': 0}
+        stats = {'processed': 0, 'skipped': 0, 'failed': 0, 'filtered': 0}
         
         # Process each video
         for video_dir in tqdm(video_dirs, desc="Extracting CLIP features"):
             video_id = video_dir.name
+            
+            # Filter by whitelist if provided
+            if whitelist_video_ids is not None and video_id not in whitelist_video_ids:
+                logger.debug(f"Filtering out {video_id} (not in training split)")
+                stats['filtered'] += 1
+                continue
             
             # Check if already processed
             if skip_existing and (self.features_dir / f"{video_id}.npy").exists():

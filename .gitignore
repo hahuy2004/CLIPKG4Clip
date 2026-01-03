@@ -12,3 +12,5 @@
 
 README_PIPELINE.md
 TRAINING_SPLIT_UPDATE.md
+
+/generators/inspect_msvd_captions.py

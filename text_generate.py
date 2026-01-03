@@ -263,7 +263,8 @@ class TextEnrichmentPipeline:
             generator = CaptionGenerator(
                 self.dataset_path,
                 pretrained_dir=str(self.pretrained_dir),
-                device=self.device
+                device=self.device,
+                dataset_name=self.dataset_name
             )
             
             captions = generator.process_dataset(output_file=output_file, whitelist_video_ids=whitelist_video_ids)
