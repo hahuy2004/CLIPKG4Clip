@@ -9,3 +9,6 @@
 
 /datasets/MSRVTT/kg/*.hdf5
 /datasets/MSVD/kg/*.hdf5
+
+README_PIPELINE.md
+TRAINING_SPLIT_UPDATE.md

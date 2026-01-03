@@ -1,0 +1,39 @@
+# Video Text Enrichment Pipeline - Requirements
+# Python dependencies for the video captioning and segmentation pipeline
+
+# Deep Learning Frameworks
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Transformers and NLP
+transformers>=4.30.0
+sentencepiece>=0.1.99
+accelerate>=0.20.0
+
+# CLIP
+git+https://github.com/openai/CLIP.git
+
+# Computer Vision
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Segmentation and Change Point Detection
+ruptures>=1.1.8
+
+# Scientific Computing
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Utilities
+tqdm>=4.65.0
+ftfy>=6.1.1
+regex>=2023.6.3
+
+# JSON and Data Handling
+ujson>=5.8.0
+
+# Logging
+coloredlogs>=15.0.1
+
+# Optional: For better performance
+# nvidia-ml-py3>=7.352.0  # For GPU monitoring
