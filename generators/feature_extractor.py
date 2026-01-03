@@ -195,7 +195,7 @@ class CLIPFeatureExtractor:
         return stats
 
 
-def extract_features(dataset_name, dataset_root='dataset', device='cuda'):
+def extract_features(dataset_name, dataset_root='datasets', device='cuda'):
     """
     Convenience function to extract CLIP features from a dataset.
     
@@ -219,7 +219,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Extract CLIP features from frames')
     parser.add_argument('--dataset_name', type=str, default='MSRVTT',
                        help='Name of the dataset')
-    parser.add_argument('--dataset_root', type=str, default='dataset',
+    parser.add_argument('--dataset_root', type=str, default='datasets',
                        help='Root directory containing datasets')
     parser.add_argument('--device', type=str, default='cuda',
                        choices=['cuda', 'cpu'],

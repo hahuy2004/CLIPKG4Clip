@@ -32,13 +32,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_train_split(dataset_name, dataset_root='dataset'):
+def load_train_split(dataset_name, dataset_root='datasets'):
     """
     Load training split video IDs for a specific dataset.
     
     Args:
         dataset_name: Name of the dataset (e.g., 'MSRVTT', 'MSVD')
-        dataset_root: Root directory containing datasets
+        dataset_root: Root directory containing datasets (default: 'datasets')
         
     Returns:
         Set of video IDs in the training split, or None if split file not found
@@ -101,14 +101,14 @@ def load_train_split(dataset_name, dataset_root='dataset'):
 class TextEnrichmentPipeline:
     """Complete pipeline for video text enrichment."""
     
-    def __init__(self, dataset_name, dataset_root='dataset', device='cuda', 
+    def __init__(self, dataset_name, dataset_root='datasets', device='cuda', 
                  pretrained_dir='./pretrained'):
         """
         Initialize the pipeline.
         
         Args:
             dataset_name: Name of the dataset (e.g., 'MSRVTT')
-            dataset_root: Root directory containing datasets
+            dataset_root: Root directory containing datasets (default: 'datasets')
             device: Device to run inference on
             pretrained_dir: Directory to cache pretrained models
         """
@@ -392,7 +392,7 @@ def main():
     # Dataset arguments
     parser.add_argument('--dataset_name', type=str, default='MSRVTT',
                        help='Name of the dataset')
-    parser.add_argument('--dataset_root', type=str, default='dataset',
+    parser.add_argument('--dataset_root', type=str, default='datasets',
                        help='Root directory containing datasets')
     
     # Processing arguments
