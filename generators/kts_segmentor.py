@@ -12,126 +12,205 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def compute_change_points_kts(features, num_segments=None, threshold=0.5):
+def compute_change_points_kts(features, num_segments=None, penalty_coef=1.0):
     """
-    Compute change points using Kernel Temporal Segmentation (simplified version).
+    Kernel Temporal Segmentation (KTS) - Algorithm 1 from Potapov et al. (2014).
+    Exact implementation following the paper line-by-line.
     
     Args:
-        features: Feature matrix of shape (num_frames, feature_dim)
-        num_segments: Target number of segments (if None, use threshold)
-        threshold: Threshold for change point detection
+        features: Feature matrix of shape (N, feature_dim)
+        num_segments: Target number of segments (if None, auto-select using penalty)
+                     Note: number of segments = number of change points + 1
+        penalty_coef: Penalty coefficient C for model selection (default: 1.0)
         
     Returns:
-        List of change point indices
+        List of change point indices [0, t1, t2, ..., t_m, N] where segments are [ti, ti+1)
     """
-    n = features.shape[0]
+    N = features.shape[0]
     
-    if n <= 2:
-        return [0, n - 1]
+    if N <= 1:
+        return [0, N]
     
-    # Normalize features
+    # ============================================================
+    # STEP 1: L2 Normalization (per frame)
+    # Input: temporal sequence x_0, x_1, ..., x_{N-1}
+    # ============================================================
     features = features / (np.linalg.norm(features, axis=1, keepdims=True) + 1e-8)
     
-    # Compute segment scores using dynamic programming
-    if num_segments is None:
-        # Use ruptures library for automatic change point detection
-        try:
-            import ruptures as rpt
-            
-            # Use PELT algorithm for change point detection
-            algo = rpt.Pelt(model="rbf", min_size=3, jump=1).fit(features)
-            change_points = algo.predict(pen=threshold * 10)
-            
-            # Remove the last point (which is always n)
-            change_points = [0] + [cp - 1 for cp in change_points[:-1]] + [n - 1]
-            
-        except ImportError:
-            logger.warning("ruptures library not available, using simple method")
-            # Fallback: simple method based on feature similarity
-            change_points = compute_simple_change_points(features, threshold)
+    # ============================================================
+    # STEP 2: Compute Gram Matrix (Linear Kernel) - Algorithm 1, Line 1
+    # K[i,j] = K(x_i, x_j) = x_i^T @ x_j (cosine similarity after normalization)
+    # Cost: O(N^2 * d), where d = feature_dim
+    # ============================================================
+    K = np.dot(features, features.T)  # Shape: (N, N)
+    
+    # ============================================================
+    # STEP 3: Build 2D Summed-Area Table (Integral Image) - Algorithm 1, Line 2
+    # Reference [34]: Viola & Jones, "Robust real-time object detection" (2001)
+    # 
+    # S[i,j] = sum of K[0:i, 0:j] (cumulative sum over 2D rectangular region)
+    # This allows O(1) computation of any rectangular sub-matrix sum.
+    # 
+    # Construction: S[i,j] = K[i-1,j-1] + S[i-1,j] + S[i,j-1] - S[i-1,j-1]
+    # Query (sum of K[r1:r2, c1:c2]): S[r2,c2] - S[r1,c2] - S[r2,c1] + S[r1,c1]
+    # ============================================================
+    S = np.zeros((N + 1, N + 1), dtype=np.float64)
+    for i in range(1, N + 1):
+        for j in range(1, N + 1):
+            S[i, j] = K[i-1, j-1] + S[i-1, j] + S[i, j-1] - S[i-1, j-1]
+    
+    # ============================================================
+    # STEP 4: Variance Function - Algorithm 1, Line 3
+    # Unnormalized variance for segment [t, t+d):
+    # v(t, t+d) = sum_{i=t}^{t+d-1} K_{ii} - (1/d) * sum_{i,j=t}^{t+d-1} K_{ij}
+    # 
+    # Using the 2D integral image, the second term is computed in O(1):
+    # sum_{i,j=t}^{t+d-1} K_{ij} = S[t+d, t+d] - S[t, t+d] - S[t+d, t] + S[t, t]
+    # ============================================================
+    def compute_variance(t_start, t_end):
+        """
+        Compute unnormalized variance for segment [t_start, t_end) in O(1).
+        """
+        d = t_end - t_start
+        if d <= 0:
+            return 0.0
+        
+        # Sum of diagonal elements: sum_{i=t}^{t+d-1} K[i,i]
+        diag_sum = np.sum(K[range(t_start, t_end), range(t_start, t_end)])
+        
+        # Sum of all elements in block K[t:t+d, t:t+d] using 4-corner formula
+        block_sum = S[t_end, t_end] - S[t_start, t_end] - S[t_end, t_start] + S[t_start, t_start]
+        
+        # Variance formula from paper
+        variance = diag_sum - (block_sum / d)
+        return variance
+    
+    # ============================================================
+    # STEP 5: Dynamic Programming - Algorithm 1, Line 4
+    # L[i, j] = minimum cost for first j elements with i change-points
+    # 
+    # CRITICAL: i = number of change-points, NOT number of segments
+    # With i change-points, you have (i+1) segments
+    # 
+    # Recurrence (Algorithm 1, Line 4):
+    # L_{i,j} = min_{t=i,...,j-1} (L_{i-1,t} + v_{t,j})
+    # 
+    # Initialization (Algorithm 1, implied):
+    # L_{0,j} = v_{0,j}  (0 change-points = 1 segment covering [0,j))
+    # ============================================================
+    
+    # Determine maximum number of change-points to consider
+    if num_segments is not None:
+        # User specified number of segments -> number of change-points = segments - 1
+        m_max = num_segments - 1
     else:
-        # Use fixed number of segments
-        segment_length = n / num_segments
-        change_points = [int(i * segment_length) for i in range(num_segments + 1)]
-        change_points[-1] = n - 1
+        # Auto-select: allow up to N-1 change-points (N segments)
+        m_max = N - 1
     
-    return sorted(list(set(change_points)))
-
-
-def compute_simple_change_points(features, threshold=0.5):
-    """
-    Simple change point detection based on cosine similarity.
+    m_max = max(0, min(m_max, N - 1))  # Clamp to [0, N-1]
     
-    Args:
-        features: Feature matrix of shape (num_frames, feature_dim)
-        threshold: Threshold for detecting changes
+    # DP table: L[i, j] = minimum cost for j elements with i change-points
+    L = np.full((m_max + 1, N + 1), np.inf, dtype=np.float64)
+    
+    # Backtracking table: stores the position of the i-th change-point for state (i, j)
+    backtrack = np.zeros((m_max + 1, N + 1), dtype=np.int32)
+    
+    # Base case: 0 change-points (1 segment)
+    # L[0, j] = v(0, j) for j = 1, ..., N
+    L[0, 0] = 0.0  # Empty sequence has 0 cost
+    for j in range(1, N + 1):
+        L[0, j] = compute_variance(0, j)
+    
+    # Fill DP table for i >= 1 change-points
+    # Complexity: O(m_max * N^2) as required
+    for i in range(1, m_max + 1):
+        for j in range(i + 1, N + 1):  # Need at least i+1 elements for i change-points
+            # Try all positions t for the i-th change-point
+            # t ranges from i to j-1 (need at least i elements before t, and at least 1 after)
+            for t in range(i, j):
+                cost = L[i - 1, t] + compute_variance(t, j)
+                if cost < L[i, j]:
+                    L[i, j] = cost
+                    backtrack[i, j] = t
+    
+    # ============================================================
+    # STEP 6: Model Selection - Algorithm 1, Line 5
+    # Penalty function: g(m, n) = m * (log(n/m) + 1)
+    # where m = number of change-points
+    # 
+    # Select m* = argmin_m [L[m, N] + C * g(m, N)]
+    # ============================================================
+    if num_segments is None:
+        def penalty_function(m, n):
+            """
+            Penalty function from the paper.
+            m: number of change-points
+            n: sequence length
+            """
+            if m <= 0:
+                return 0.0  # No penalty for 0 change-points
+            if m >= n:
+                return np.inf  # Cannot have more change-points than elements
+            return m * (np.log(n / m) + 1)
         
-    Returns:
-        List of change point indices
-    """
-    n = features.shape[0]
+        # Find optimal number of change-points
+        best_m = 0
+        best_score = np.inf
+        
+        for m in range(0, m_max + 1):
+            if L[m, N] == np.inf:
+                continue
+            score = L[m, N] + penalty_coef * penalty_function(m, N)
+            if score < best_score:
+                best_score = score
+                best_m = m
+        
+        m_star = best_m
+    else:
+        # Use user-specified number of segments
+        m_star = min(num_segments - 1, m_max)
     
-    if n <= 2:
-        return [0, n - 1]
+    # ============================================================
+    # STEP 7: Backtracking - Algorithm 1, Line 6
+    # Find change-point positions t_0, ..., t_{m*-1}
+    # These are the internal boundaries (not including 0 and N)
+    # ============================================================
+    change_points = []
+    current_pos = N
+    current_m = m_star
     
-    # Normalize features
-    features = features / (np.linalg.norm(features, axis=1, keepdims=True) + 1e-8)
+    # Trace back through the DP table
+    while current_m > 0:
+        prev_pos = backtrack[current_m, current_pos]
+        change_points.append(prev_pos)
+        current_pos = prev_pos
+        current_m -= 1
     
-    # Compute frame-to-frame similarity
-    similarities = np.array([
-        np.dot(features[i], features[i + 1])
-        for i in range(n - 1)
-    ])
+    # Add boundaries: 0 (start) and N (end)
+    # Result: [0, t_1, t_2, ..., t_m, N]
+    # Segments are: [0, t_1), [t_1, t_2), ..., [t_m, N)
+    change_points = [0] + sorted(change_points) + [N]
     
-    # Find local minima (low similarity = potential change points)
-    change_points = [0]
-    
-    # Use adaptive thresholding
-    mean_sim = np.mean(similarities)
-    std_sim = np.std(similarities)
-    adaptive_threshold = mean_sim - threshold * std_sim
-    
-    for i in range(1, len(similarities) - 1):
-        # Check if local minimum and below threshold
-        if (similarities[i] < similarities[i - 1] and 
-            similarities[i] < similarities[i + 1] and
-            similarities[i] < adaptive_threshold):
-            change_points.append(i + 1)
-    
-    change_points.append(n - 1)
-    
-    # Merge segments that are too short
-    min_segment_length = max(3, n // 20)  # At least 3 frames or 5% of video
-    merged_points = [change_points[0]]
-    
-    for i in range(1, len(change_points)):
-        if change_points[i] - merged_points[-1] >= min_segment_length:
-            merged_points.append(change_points[i])
-    
-    # Ensure last point is included
-    if merged_points[-1] != change_points[-1]:
-        merged_points.append(change_points[-1])
-    
-    return merged_points
+    return change_points
 
 
 class KTSSegmentor:
     """Segment videos into events using Kernel Temporal Segmentation."""
     
-    def __init__(self, dataset_root, num_segments=None, threshold=0.5):
+    def __init__(self, dataset_root, num_segments=None, penalty_coef=1.0):
         """
         Initialize KTS Segmentor.
         
         Args:
             dataset_root: Root directory of dataset (e.g., 'dataset/MSRVTT')
-            num_segments: Target number of segments (None for automatic)
-            threshold: Threshold for change point detection
+            num_segments: Target number of segments (None for automatic selection)
+            penalty_coef: Penalty coefficient for model selection (default: 1.0)
         """
         self.dataset_root = Path(dataset_root)
         self.features_dir = self.dataset_root / 'features'
         self.segments_dir = self.dataset_root / 'segments'
         self.num_segments = num_segments
-        self.threshold = threshold
+        self.penalty_coef = penalty_coef
         
         # Create output directory
         self.segments_dir.mkdir(parents=True, exist_ok=True)
@@ -164,11 +243,11 @@ class KTSSegmentor:
         try:
             features = np.load(features_path)
             
-            # Detect change points
+            # Detect change points using KTS algorithm
             change_points = compute_change_points_kts(
                 features, 
                 num_segments=self.num_segments,
-                threshold=self.threshold
+                penalty_coef=self.penalty_coef
             )
             
             # Convert change points to segments
@@ -176,7 +255,7 @@ class KTSSegmentor:
             for i in range(len(change_points) - 1):
                 segments.append({
                     'start_frame': int(change_points[i]),
-                    'end_frame': int(change_points[i + 1])
+                    'end_frame': int(change_points[i + 1])  # Exclusive end in output
                 })
             
             # Save segments
@@ -253,7 +332,7 @@ class KTSSegmentor:
         return stats
 
 
-def segment_videos(dataset_name, dataset_root='dataset', num_segments=None, threshold=0.5):
+def segment_videos(dataset_name, dataset_root='dataset', num_segments=None, penalty_coef=1.0):
     """
     Convenience function to segment videos in a dataset.
     
@@ -261,13 +340,13 @@ def segment_videos(dataset_name, dataset_root='dataset', num_segments=None, thre
         dataset_name: Name of the dataset (e.g., 'MSRVTT')
         dataset_root: Root directory containing datasets
         num_segments: Target number of segments per video (None for automatic)
-        threshold: Threshold for change point detection
+        penalty_coef: Penalty coefficient for model selection (default: 1.0)
         
     Returns:
         Processing statistics
     """
     dataset_path = Path(dataset_root) / dataset_name
-    segmentor = KTSSegmentor(dataset_path, num_segments=num_segments, threshold=threshold)
+    segmentor = KTSSegmentor(dataset_path, num_segments=num_segments, penalty_coef=penalty_coef)
     return segmentor.process_dataset()
 
 
@@ -275,15 +354,15 @@ if __name__ == "__main__":
     # Test the segmentor
     import argparse
     
-    parser = argparse.ArgumentParser(description='Segment videos using KTS')
+    parser = argparse.ArgumentParser(description='Segment videos using KTS (Potapov et al. 2014)')
     parser.add_argument('--dataset_name', type=str, default='MSRVTT',
                        help='Name of the dataset')
     parser.add_argument('--dataset_root', type=str, default='dataset',
                        help='Root directory containing datasets')
     parser.add_argument('--num_segments', type=int, default=None,
-                       help='Target number of segments (None for automatic)')
-    parser.add_argument('--threshold', type=float, default=0.5,
-                       help='Threshold for change point detection')
+                       help='Target number of segments (None for automatic selection)')
+    parser.add_argument('--penalty_coef', type=float, default=1.0,
+                       help='Penalty coefficient for model selection (default: 1.0)')
     
     args = parser.parse_args()
     
@@ -291,7 +370,7 @@ if __name__ == "__main__":
         dataset_name=args.dataset_name,
         dataset_root=args.dataset_root,
         num_segments=args.num_segments,
-        threshold=args.threshold
+        penalty_coef=args.penalty_coef
     )
     
     print(f"\nSegmentation complete:")

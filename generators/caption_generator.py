@@ -143,14 +143,19 @@ class CaptionGenerator:
             
             # Generate caption for each segment
             for segment in segments:
-                start_frame = segment['start_frame']
-                end_frame = segment['end_frame']
+                start_frame = segment.get('start_frame')
+                end_frame = segment.get('end_frame')
+                
+                # Validate frame indices
+                if start_frame is None or end_frame is None:
+                    logger.warning(f"Skipping segment with None frame indices for {video_id}: start={start_frame}, end={end_frame}")
+                    continue
                 
                 # Calculate middle frame index
                 middle_frame_idx = (start_frame + end_frame) // 2
                 
                 # Ensure index is within bounds
-                middle_frame_idx = min(middle_frame_idx, len(frame_files) - 1)
+                middle_frame_idx = max(0, min(middle_frame_idx, len(frame_files) - 1))
                 
                 # Get middle frame path
                 middle_frame_path = frame_files[middle_frame_idx]
