@@ -182,18 +182,18 @@ class CaptionGenerator:
             whitelist_video_ids: Set of video IDs to process (None = process all)
             
         Returns:
-            Dictionary mapping video_id to list of captions
+            Tuple of (enriched_captions dict, stats dict)
         """
         if not self.segments_dir.exists():
             logger.error(f"Segments directory not found: {self.segments_dir}")
-            return {}
+            return {}, {'processed': 0, 'failed': 0, 'filtered': 0}
         
         # Get all segment files
         segment_files = list(self.segments_dir.glob('*.json'))
         
         if not segment_files:
             logger.warning(f"No segment files found in {self.segments_dir}")
-            return {}
+            return {}, {'processed': 0, 'failed': 0, 'filtered': 0}
         
         logger.info(f"Found {len(segment_files)} videos to caption")
         
@@ -225,7 +225,7 @@ class CaptionGenerator:
         logger.info(f"Caption generation complete. Processed: {stats['processed']}, "
                    f"Failed: {stats['failed']}, Filtered: {stats.get('filtered', 0)}")
         
-        return enriched_captions
+        return enriched_captions, stats
     
     def _save_captions(self, enriched_captions, output_file):
         """
@@ -365,7 +365,7 @@ def generate_captions(dataset_name, dataset_root='datasets', pretrained_dir='./p
         output_file: Name of output JSON file
         
     Returns:
-        Dictionary mapping video_id to list of captions
+        Tuple of (enriched_captions dict, stats dict)
     """
     dataset_path = Path(dataset_root) / dataset_name
     generator = CaptionGenerator(dataset_path, pretrained_dir=pretrained_dir, device=device, dataset_name=dataset_name)
@@ -391,7 +391,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    captions = generate_captions(
+    captions, stats = generate_captions(
         dataset_name=args.dataset_name,
         dataset_root=args.dataset_root,
         pretrained_dir=args.pretrained_dir,
@@ -400,5 +400,8 @@ if __name__ == "__main__":
     )
     
     print(f"\nCaption generation complete:")
-    print(f"  Videos processed: {len(captions)}")
+    print(f"  Processed: {stats['processed']}")
+    print(f"  Failed: {stats['failed']}")
+    print(f"  Filtered: {stats.get('filtered', 0)}")
+    print(f"  Videos with captions: {len(captions)}")
     print(f"  Total captions: {sum(len(caps) for caps in captions.values())}")

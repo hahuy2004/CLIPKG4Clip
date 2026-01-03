@@ -202,13 +202,13 @@ class TextEnrichmentPipeline:
             logger.error(f"Error in Step 2: {str(e)}")
             raise
     
-    def step3_segment_videos(self, num_segments=None, threshold=0.5, skip_existing=True, whitelist_video_ids=None):
+    def step3_segment_videos(self, num_segments=None, penalty_coef=1.0, skip_existing=True, whitelist_video_ids=None):
         """
         Step 3: Segment videos using KTS.
         
         Args:
             num_segments: Target number of segments (None for automatic)
-            threshold: Threshold for change point detection
+            penalty_coef: Penalty coefficient for model selection (default: 1.0)
             skip_existing: Skip videos with existing segments
             whitelist_video_ids: Set of video IDs to process (None = process all)
             
@@ -225,7 +225,7 @@ class TextEnrichmentPipeline:
             segmentor = KTSSegmentor(
                 self.dataset_path,
                 num_segments=num_segments,
-                threshold=threshold
+                penalty_coef=penalty_coef
             )
             
             stats = segmentor.process_dataset(skip_existing=skip_existing, whitelist_video_ids=whitelist_video_ids)
@@ -251,7 +251,7 @@ class TextEnrichmentPipeline:
             whitelist_video_ids: Set of video IDs to process (None = process all)
             
         Returns:
-            Dictionary mapping video_id to captions
+            Processing statistics
         """
         logger.info("=" * 70)
         logger.info("STEP 4/4: Generating Captions using BLIP-2")
@@ -267,21 +267,25 @@ class TextEnrichmentPipeline:
                 dataset_name=self.dataset_name
             )
             
-            captions = generator.process_dataset(output_file=output_file, whitelist_video_ids=whitelist_video_ids)
+            captions, stats = generator.process_dataset(output_file=output_file, whitelist_video_ids=whitelist_video_ids)
             
             elapsed_time = time.time() - start_time
             logger.info(f"Step 4 completed in {elapsed_time:.2f}s")
+            logger.info(f"Processed: {stats['processed']}, "
+                       f"Failed: {stats['failed']}, "
+                       f"Filtered: {stats.get('filtered', 0)}")
             logger.info(f"Generated captions for {len(captions)} videos")
             logger.info(f"Total captions: {sum(len(caps) for caps in captions.values())}")
             
-            return captions
+            # Return stats for consistency with other steps
+            return stats
             
         except Exception as e:
             logger.error(f"Error in Step 4: {str(e)}")
             raise
     
     def run_full_pipeline(self, fps=1, target_size=(224, 224), 
-                         num_segments=None, threshold=0.5,
+                         num_segments=None, penalty_coef=1.0,
                          skip_existing=True, output_file='enriched_captions.json',
                          train_split_only=True):
         """
@@ -291,7 +295,7 @@ class TextEnrichmentPipeline:
             fps: Frames per second to extract
             target_size: Target frame size
             num_segments: Target number of segments per video
-            threshold: Threshold for change point detection
+            penalty_coef: Penalty coefficient for model selection (default: 1.0)
             skip_existing: Skip already processed videos
             output_file: Name of output caption file
             train_split_only: Only process training split videos (default: True)
@@ -307,7 +311,7 @@ class TextEnrichmentPipeline:
         logger.info(f"  - FPS: {fps}")
         logger.info(f"  - Frame size: {target_size}")
         logger.info(f"  - Num segments: {num_segments or 'automatic'}")
-        logger.info(f"  - KTS threshold: {threshold}")
+        logger.info(f"  - KTS penalty_coef: {penalty_coef}")
         logger.info(f"  - Skip existing: {skip_existing}")
         logger.info(f"  - Train split only: {train_split_only}")
         logger.info(f"  - Device: {self.device}")
@@ -351,7 +355,7 @@ class TextEnrichmentPipeline:
             # Step 3: Segment videos
             results['step3'] = self.step3_segment_videos(
                 num_segments=num_segments,
-                threshold=threshold,
+                penalty_coef=penalty_coef,
                 skip_existing=skip_existing,
                 whitelist_video_ids=train_video_ids
             )
@@ -412,8 +416,8 @@ def main():
     # Segmentation arguments
     parser.add_argument('--num_segments', type=int, default=None,
                        help='Target number of segments per video (None for automatic)')
-    parser.add_argument('--threshold', type=float, default=0.5,
-                       help='Threshold for KTS change point detection')
+    parser.add_argument('--penalty_coef', type=float, default=1.0,
+                       help='Penalty coefficient for KTS model selection (default: 1.0)')
     
     # Output arguments
     parser.add_argument('--output', type=str, default='enriched_captions.json',
@@ -461,7 +465,7 @@ def main():
                 fps=args.fps,
                 target_size=(args.frame_size, args.frame_size),
                 num_segments=args.num_segments,
-                threshold=args.threshold,
+                penalty_coef=args.penalty_coef,
                 skip_existing=args.skip_existing,
                 output_file=args.output,
                 train_split_only=args.train_split_only
@@ -485,7 +489,7 @@ def main():
             elif step_num == 3:
                 pipeline.step3_segment_videos(
                     num_segments=args.num_segments,
-                    threshold=args.threshold,
+                    penalty_coef=args.penalty_coef,
                     skip_existing=args.skip_existing,
                     whitelist_video_ids=train_video_ids
                 )
