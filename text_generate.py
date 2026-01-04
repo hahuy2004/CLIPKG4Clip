@@ -125,12 +125,12 @@ class TextEnrichmentPipeline:
         logger.info(f"Dataset path: {self.dataset_path}")
         logger.info(f"Device: {device}")
     
-    def step1_extract_frames(self, fps=1, target_size=(224, 224), skip_existing=True, whitelist_video_ids=None):
+    def step1_extract_frames(self, num_frames=12, target_size=(224, 224), skip_existing=True, whitelist_video_ids=None):
         """
         Step 1: Extract frames from videos.
         
         Args:
-            fps: Frames per second to extract
+            num_frames: Number of frames to extract evenly from each video
             target_size: Target frame size
             skip_existing: Skip videos with existing frames
             whitelist_video_ids: Set of video IDs to process (None = process all)
@@ -148,7 +148,7 @@ class TextEnrichmentPipeline:
             extractor = FrameExtractor(
                 self.dataset_path,
                 target_size=target_size,
-                fps=fps
+                num_frames=num_frames
             )
             
             stats = extractor.process_dataset(skip_existing=skip_existing, whitelist_video_ids=whitelist_video_ids)
@@ -284,7 +284,7 @@ class TextEnrichmentPipeline:
             logger.error(f"Error in Step 4: {str(e)}")
             raise
     
-    def run_full_pipeline(self, fps=1, target_size=(224, 224), 
+    def run_full_pipeline(self, num_frames=12, target_size=(224, 224), 
                          num_segments=None, penalty_coef=1.0,
                          skip_existing=True, output_file='enriched_captions.json',
                          train_split_only=True):
@@ -292,7 +292,7 @@ class TextEnrichmentPipeline:
         Run the complete text enrichment pipeline.
         
         Args:
-            fps: Frames per second to extract
+            num_frames: Number of frames to extract evenly from each video
             target_size: Target frame size
             num_segments: Target number of segments per video
             penalty_coef: Penalty coefficient for model selection (default: 1.0)
@@ -308,7 +308,7 @@ class TextEnrichmentPipeline:
         logger.info("=" * 70)
         logger.info(f"Dataset: {self.dataset_name}")
         logger.info(f"Configuration:")
-        logger.info(f"  - FPS: {fps}")
+        logger.info(f"  - Num frames per video: {num_frames}")
         logger.info(f"  - Frame size: {target_size}")
         logger.info(f"  - Num segments: {num_segments or 'automatic'}")
         logger.info(f"  - KTS penalty_coef: {penalty_coef}")
@@ -333,7 +333,7 @@ class TextEnrichmentPipeline:
         try:
             # Step 1: Extract frames
             results['step1'] = self.step1_extract_frames(
-                fps=fps,
+                num_frames=num_frames,
                 target_size=target_size,
                 skip_existing=skip_existing,
                 whitelist_video_ids=train_video_ids
@@ -408,8 +408,8 @@ def main():
                        help='Directory to cache pretrained models')
     
     # Frame extraction arguments
-    parser.add_argument('--fps', type=float, default=1.0,
-                       help='Frames per second to extract')
+    parser.add_argument('--num_frames', type=int, default=12,
+                       help='Number of frames to extract evenly from each video')
     parser.add_argument('--frame_size', type=int, default=224,
                        help='Target frame size (square)')
     
@@ -462,7 +462,7 @@ def main():
         if args.step == 'all':
             # Run full pipeline
             pipeline.run_full_pipeline(
-                fps=args.fps,
+                num_frames=args.num_frames,
                 target_size=(args.frame_size, args.frame_size),
                 num_segments=args.num_segments,
                 penalty_coef=args.penalty_coef,
@@ -476,7 +476,7 @@ def main():
             
             if step_num == 1:
                 pipeline.step1_extract_frames(
-                    fps=args.fps,
+                    num_frames=args.num_frames,
                     target_size=(args.frame_size, args.frame_size),
                     skip_existing=args.skip_existing,
                     whitelist_video_ids=train_video_ids

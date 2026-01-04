@@ -44,23 +44,28 @@ class CLIPFeatureExtractor:
             logger.error(f"Failed to load CLIP model: {str(e)}")
             raise
     
-    def extract_features_from_frames(self, frames_dir):
+    def extract_features_from_frames(self, frames_dir, expected_num_frames=12):
         """
         Extract CLIP features from all frames in a directory.
         
         Args:
             frames_dir: Directory containing frame images
+            expected_num_frames: Expected number of frames (default: 12)
             
         Returns:
             numpy array of features with shape (num_frames, feature_dim)
         """
-        # Get all frame files
+        # Get all frame files (sorted to maintain order)
         frame_files = sorted(list(frames_dir.glob('*.jpg')) + 
                            list(frames_dir.glob('*.png')))
         
         if not frame_files:
             logger.warning(f"No frames found in {frames_dir}")
             return None
+        
+        # Log warning if frame count doesn't match expected
+        if len(frame_files) != expected_num_frames:
+            logger.warning(f"Expected {expected_num_frames} frames but found {len(frame_files)} in {frames_dir}")
         
         features_list = []
         
@@ -92,7 +97,7 @@ class CLIPFeatureExtractor:
                 # Stack images into batch
                 image_batch = torch.stack(images).to(self.device)
                 
-                # Extract features
+                # Extract features using CLIP image encoder
                 features = self.model.encode_image(image_batch)
                 features = features.cpu().numpy()
                 features_list.append(features)
@@ -102,6 +107,8 @@ class CLIPFeatureExtractor:
         
         # Concatenate all features
         all_features = np.concatenate(features_list, axis=0)
+        
+        logger.debug(f"Extracted {all_features.shape[0]} feature vectors with dimension {all_features.shape[1]}")
         
         return all_features
     

@@ -12,5 +12,7 @@
 
 README_PIPELINE.md
 TRAINING_SPLIT_UPDATE.md
+PIPELINE_COMMANDS.md
+HUONG_DAN_CHAY.md
 
 /generators/inspect_msvd_captions.py

@@ -4,6 +4,7 @@ Extracts and resizes frames from video files uniformly.
 """
 import os
 import cv2
+import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import logging
@@ -14,27 +15,27 @@ logger = logging.getLogger(__name__)
 class FrameExtractor:
     """Extract frames from videos and resize them to target resolution."""
     
-    def __init__(self, dataset_root, target_size=(224, 224), fps=1):
+    def __init__(self, dataset_root, target_size=(224, 224), num_frames=12):
         """
         Initialize Frame Extractor.
         
         Args:
             dataset_root: Root directory of dataset (e.g., 'dataset/MSRVTT')
             target_size: Target frame size (width, height)
-            fps: Frames per second to extract (None = extract all frames)
+            num_frames: Number of frames to extract evenly from each video
         """
         self.dataset_root = Path(dataset_root)
         self.videos_dir = self.dataset_root / 'videos'
         self.frames_dir = self.dataset_root / 'frames'
         self.target_size = target_size
-        self.fps = fps
+        self.num_frames = num_frames
         
         # Create output directory
         self.frames_dir.mkdir(parents=True, exist_ok=True)
         
     def extract_frames_from_video(self, video_path, output_dir):
         """
-        Extract frames from a single video file.
+        Extract exactly num_frames evenly spaced frames from a single video file.
         
         Args:
             video_path: Path to video file
@@ -50,39 +51,44 @@ class FrameExtractor:
                 logger.error(f"Failed to open video: {video_path}")
                 return 0
             
-            # Get video properties
-            video_fps = cap.get(cv2.CAP_PROP_FPS)
+            # Get total number of frames in video
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
-            # Calculate frame interval
-            if self.fps is None:
-                frame_interval = 1  # Extract all frames
-            else:
-                frame_interval = int(video_fps / self.fps) if video_fps > 0 else 1
-                frame_interval = max(1, frame_interval)
+            if total_frames <= 0:
+                logger.error(f"Invalid frame count for video: {video_path}")
+                cap.release()
+                return 0
             
-            # Extract frames
-            frame_count = 0
+            # Calculate frame indices to extract (evenly spaced)
+            if total_frames < self.num_frames:
+                # If video has fewer frames than requested, take all frames
+                frame_indices = list(range(total_frames))
+            else:
+                # Extract num_frames evenly spaced frames
+                frame_indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int)
+            
             saved_count = 0
             
-            while True:
+            # Extract frames at specified indices
+            for idx, frame_idx in enumerate(frame_indices):
+                # Set frame position
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                
+                # Read frame
                 ret, frame = cap.read()
                 if not ret:
-                    break
+                    logger.warning(f"Failed to read frame {frame_idx} from {video_path.name}")
+                    continue
                 
-                # Save frame at specified interval
-                if frame_count % frame_interval == 0:
-                    # Resize frame
-                    resized_frame = cv2.resize(frame, self.target_size, 
-                                             interpolation=cv2.INTER_AREA)
-                    
-                    # Save frame
-                    frame_filename = f"frame_{saved_count:04d}.jpg"
-                    frame_path = output_dir / frame_filename
-                    cv2.imwrite(str(frame_path), resized_frame)
-                    saved_count += 1
+                # Resize frame to target size
+                resized_frame = cv2.resize(frame, self.target_size, 
+                                         interpolation=cv2.INTER_AREA)
                 
-                frame_count += 1
+                # Save frame
+                frame_filename = f"frame_{idx:04d}.jpg"
+                frame_path = output_dir / frame_filename
+                cv2.imwrite(str(frame_path), resized_frame)
+                saved_count += 1
             
             cap.release()
             logger.debug(f"Extracted {saved_count} frames from {video_path.name}")
@@ -160,21 +166,21 @@ class FrameExtractor:
         return stats
 
 
-def extract_frames(dataset_name, dataset_root='dataset', fps=1, target_size=(224, 224)):
+def extract_frames(dataset_name, dataset_root='dataset', num_frames=12, target_size=(224, 224)):
     """
     Convenience function to extract frames from a dataset.
     
     Args:
         dataset_name: Name of the dataset (e.g., 'MSRVTT')
         dataset_root: Root directory containing datasets
-        fps: Frames per second to extract
+        num_frames: Number of frames to extract evenly from each video
         target_size: Target frame size (width, height)
         
     Returns:
         Processing statistics
     """
     dataset_path = Path(dataset_root) / dataset_name
-    extractor = FrameExtractor(dataset_path, target_size=target_size, fps=fps)
+    extractor = FrameExtractor(dataset_path, target_size=target_size, num_frames=num_frames)
     return extractor.process_dataset()
 
 
@@ -187,8 +193,8 @@ if __name__ == "__main__":
                        help='Name of the dataset')
     parser.add_argument('--dataset_root', type=str, default='dataset',
                        help='Root directory containing datasets')
-    parser.add_argument('--fps', type=float, default=1.0,
-                       help='Frames per second to extract')
+    parser.add_argument('--num_frames', type=int, default=12,
+                       help='Number of frames to extract evenly from each video')
     parser.add_argument('--size', type=int, default=224,
                        help='Target frame size (square)')
     
@@ -197,7 +203,7 @@ if __name__ == "__main__":
     stats = extract_frames(
         dataset_name=args.dataset_name,
         dataset_root=args.dataset_root,
-        fps=args.fps,
+        num_frames=args.num_frames,
         target_size=(args.size, args.size)
     )
     

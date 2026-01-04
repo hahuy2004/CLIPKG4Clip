@@ -86,9 +86,8 @@ class CaptionGenerator:
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     **inputs,
-                    max_length=50,
+                    max_new_tokens=50,
                     num_beams=5,
-                    temperature=1.0,
                     do_sample=False
                 )
             
@@ -102,6 +101,8 @@ class CaptionGenerator:
             
         except Exception as e:
             logger.warning(f"Failed to generate caption for {image_path}: {str(e)}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return ""
     
     def caption_video(self, video_id):
