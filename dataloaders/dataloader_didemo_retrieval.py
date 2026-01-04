@@ -160,7 +160,7 @@ class DiDeMo_DataLoader(Dataset):
 
         # Pair x L x T x 3 x H x W
         video = np.zeros((len(s), self.max_frames, 1, 3,
-                          self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=np.float)
+                          self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=np.float32)
         video_path = self.video_dict[idx]
 
         try:

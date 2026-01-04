@@ -6,6 +6,7 @@
 /datasets/MSRVTT/videos/*.mp4
 /datasets/MSVD/videos/*.avi
 /datasets/MSVD/MSVD_Videos.zip
+/datasets/MSVD/MSVD_Videos
 /datasets/MSRVTT/videos.zip
 
 /datasets/MSRVTT/kg/*.hdf5
@@ -25,3 +26,8 @@ HUONG_DAN_CHAY.md
 /datasets/MSVD/features/*
 /datasets/MSRVTT/segments/*
 /datasets/MSVD/segments/*
+
+__pycache__
+/modules/__pycache__
+/ckpts/ckpt_msvd_retrieval_looseType/*
+/dataloaders/__pycache__

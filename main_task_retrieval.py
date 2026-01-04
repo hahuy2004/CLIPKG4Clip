@@ -36,6 +36,7 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
     parser.add_argument('--num_thread_reader', type=int, default=1, help='')
     parser.add_argument('--lr', type=float, default=0.0001, help='initial learning rate')
     parser.add_argument('--epochs', type=int, default=20, help='upper epoch limit')
+    parser.add_argument('--max_steps', type=int, default=-1, help='max training steps, -1 means no limit')
     parser.add_argument('--batch_size', type=int, default=256, help='batch size')
     parser.add_argument('--batch_size_val', type=int, default=3500, help='batch size eval')
     parser.add_argument('--lr_decay', type=float, default=0.9, help='Learning rate exp epoch decay')
@@ -212,7 +213,7 @@ def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, loc
                          max_grad_norm=1.0)
 
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],
-                                                      output_device=local_rank, find_unused_parameters=True)
+                                                      output_device=local_rank, find_unused_parameters=False)
 
     return optimizer, scheduler, model
 
@@ -256,6 +257,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
     log_step = args.n_display
     start_time = time.time()
     total_loss = 0
+    early_stop = False
 
     for step, batch in enumerate(train_dataloader):
         if n_gpu == 1:
@@ -297,9 +299,16 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                             float(loss),
                             (time.time() - start_time) / (log_step * args.gradient_accumulation_steps))
                 start_time = time.time()
+            
+            # Kiểm tra nếu đã đạt max_steps
+            if args.max_steps > 0 and global_step >= args.max_steps:
+                if local_rank == 0:
+                    logger.info("Reached max_steps: %d, stopping training.", args.max_steps)
+                early_stop = True
+                break
 
     total_loss = total_loss / len(train_dataloader)
-    return total_loss, global_step
+    return total_loss, global_step, early_stop
 
 def _run_on_single_gpu(model, batch_list_t, batch_list_v, batch_sequence_output_list, batch_visual_output_list):
     sim_matrix = []
@@ -387,6 +396,9 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
 
             print("{}/{}\r".format(bid, len(test_dataloader)), end="")
 
+        print()  # New line after progress
+        logger.info("Finished caching features. Now calculating similarity matrix...")
+        
         # ----------------------------------
         # 2. calculate the similarity
         # ----------------------------------
@@ -428,6 +440,8 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
         else:
             sim_matrix = _run_on_single_gpu(model, batch_list_t, batch_list_v, batch_sequence_output_list, batch_visual_output_list)
             sim_matrix = np.concatenate(tuple(sim_matrix), axis=0)
+        
+        logger.info("Similarity matrix calculation completed!")
 
     if multi_sentence_:
         logger.info("before reshape, sim matrix size: {} x {}".format(sim_matrix.shape[0], sim_matrix.shape[1]))
@@ -552,7 +566,7 @@ def main():
         global_step = 0
         for epoch in range(resumed_epoch, args.epochs):
             train_sampler.set_epoch(epoch)
-            tr_loss, global_step = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
+            tr_loss, global_step, early_stop = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
                                                scheduler, global_step, local_rank=args.local_rank)
             if args.local_rank == 0:
                 logger.info("Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
@@ -568,6 +582,10 @@ def main():
                     best_score = R1
                     best_output_model_file = output_model_file
                 logger.info("The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
+            
+            # Dừng training nếu đã đạt max_steps
+            if early_stop:
+                break
 
         ## Uncomment if want to test on the best checkpoint
         # if args.local_rank == 0:
