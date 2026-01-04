@@ -23,6 +23,7 @@ class MSVD_DataLoader(Dataset):
             image_resolution=224,
             frame_order=0,
             slice_framepos=0,
+            use_enriched=False,
     ):
         self.data_path = data_path
         self.features_path = features_path
@@ -43,7 +44,19 @@ class MSVD_DataLoader(Dataset):
         video_id_path_dict["train"] = os.path.join(self.data_path, "train_list.txt")
         video_id_path_dict["val"] = os.path.join(self.data_path, "val_list.txt")
         video_id_path_dict["test"] = os.path.join(self.data_path, "test_list.txt")
-        caption_file = os.path.join(self.data_path, "raw-captions.pkl")
+        
+        # Choose caption file based on whether using enriched data
+        if use_enriched and self.subset == "train":
+            enriched_caption_file = os.path.join(self.data_path, "enriched-caption-complete.pkl")
+            if os.path.exists(enriched_caption_file):
+                caption_file = enriched_caption_file
+                print(f"Using ENRICHED captions: {caption_file}")
+            else:
+                caption_file = os.path.join(self.data_path, "raw-captions.pkl")
+                print(f"Enriched caption file not found, using raw captions: {caption_file}")
+        else:
+            caption_file = os.path.join(self.data_path, "raw-captions.pkl")
+            print(f"Using RAW captions: {caption_file}")
 
         with open(video_id_path_dict[self.subset], 'r') as fp:
             video_ids = [itm.strip() for itm in fp.readlines()]

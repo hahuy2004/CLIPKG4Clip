@@ -32,6 +32,12 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
     parser.add_argument('--val_csv', type=str, default='data/.val.csv', help='')
     parser.add_argument('--data_path', type=str, default='data/caption.pickle', help='data pickle file path')
     parser.add_argument('--features_path', type=str, default='data/videos_feature.pickle', help='feature path')
+    
+    # Enriched data training parameters
+    parser.add_argument('--enriched_data_path', type=str, default=None, help='Path to enriched captions JSON file for pre-training (MSRVTT)')
+    parser.add_argument('--enriched', type=str, default='no', choices=['yes', 'no'], help='Use enriched captions for MSVD dataset')
+    parser.add_argument('--enriched_epochs', type=int, default=3, help='Number of epochs to train on enriched data')
+    parser.add_argument('--enriched_max_steps', type=int, default=-1, help='Max training steps for enriched data, -1 means no limit')
 
     parser.add_argument('--num_thread_reader', type=int, default=1, help='')
     parser.add_argument('--lr', type=float, default=0.0001, help='initial learning rate')
@@ -538,15 +544,115 @@ def main():
     # train and eval
     ## ####################################
     if args.do_train:
+        # Check if we need to do enriched data training first
+        enriched_checkpoint = None
+        use_enriched_training = False
+        
+        # For MSRVTT: use enriched_data_path
+        if args.datatype == "msrvtt" and args.enriched_data_path is not None and os.path.exists(args.enriched_data_path):
+            use_enriched_training = True
+        # For MSVD: use enriched flag
+        elif args.datatype == "msvd" and args.enriched == "yes":
+            use_enriched_training = True
+        
+        if use_enriched_training:
+            if args.local_rank == 0:
+                logger.info("="*50)
+                logger.info("STAGE 1: Training on ENRICHED DATA")
+                logger.info("="*50)
+                if args.datatype == "msrvtt":
+                    logger.info("Enriched data path: %s", args.enriched_data_path)
+                else:
+                    logger.info("Using enriched captions for MSVD")
+                logger.info("Enriched epochs: %d", args.enriched_epochs)
+                logger.info("Enriched max steps: %d", args.enriched_max_steps)
+            
+            # Temporarily swap parameters
+            original_data_path = args.data_path
+            original_epochs = args.epochs
+            original_max_steps = args.max_steps
+            original_enriched = None
+            
+            if args.datatype == "msrvtt":
+                args.data_path = args.enriched_data_path
+            elif args.datatype == "msvd":
+                # For MSVD, keep data_path but mark as using enriched
+                original_enriched = args.enriched
+                args.enriched = "yes"
+            
+            args.epochs = args.enriched_epochs
+            args.max_steps = args.enriched_max_steps
+            
+            # Load enriched data
+            train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
+            num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
+                                            / args.gradient_accumulation_steps) * args.epochs
+
+            coef_lr = args.coef_lr
+            optimizer, scheduler, model = prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, args.local_rank, coef_lr=coef_lr)
+
+            if args.local_rank == 0:
+                logger.info("***** Running ENRICHED data training *****")
+                logger.info("  Num examples = %d", train_length)
+                logger.info("  Batch size = %d", args.batch_size)
+                logger.info("  Num steps = %d", num_train_optimization_steps * args.gradient_accumulation_steps)
+
+            last_enriched_model_file = "None"
+            
+            global_step = 0
+            for epoch in range(0, args.enriched_epochs):
+                train_sampler.set_epoch(epoch)
+                tr_loss, global_step, early_stop = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
+                                                   scheduler, global_step, local_rank=args.local_rank)
+                if args.local_rank == 0:
+                    logger.info("[ENRICHED] Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.enriched_epochs, tr_loss)
+
+                    # Save checkpoint for this epoch
+                    output_model_file = save_model(epoch, args, model, optimizer, tr_loss, type_name="enriched")
+                    last_enriched_model_file = output_model_file
+                
+                # Stop if reached max_steps
+                if early_stop:
+                    break
+            
+            # Use the last enriched checkpoint for next stage
+            enriched_checkpoint = last_enriched_model_file
+            
+            # Restore original parameters
+            args.data_path = original_data_path
+            args.epochs = original_epochs
+            args.max_steps = original_max_steps
+            if args.datatype == "msvd" and original_enriched is not None:
+                args.enriched = "no"  # Switch to raw captions for MSVD
+            
+            if args.local_rank == 0:
+                logger.info("="*50)
+                logger.info("STAGE 1 COMPLETED: Using last checkpoint: %s", enriched_checkpoint)
+                logger.info("="*50)
+        
+        # STAGE 2: Train on original data
+        if args.local_rank == 0:
+            logger.info("="*50)
+            logger.info("STAGE 2: Training on ORIGINAL DATA")
+            logger.info("="*50)
+        
+        # Load original data
         train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
         num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
                                         / args.gradient_accumulation_steps) * args.epochs
 
+        # If we have enriched checkpoint, load it as init model
+        if enriched_checkpoint is not None:
+            if args.local_rank == 0:
+                logger.info("Loading enriched checkpoint: %s", enriched_checkpoint)
+            # Load the enriched model
+            model = load_model(-1, args, n_gpu, device, model_file=enriched_checkpoint)
+        
         coef_lr = args.coef_lr
         optimizer, scheduler, model = prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, args.local_rank, coef_lr=coef_lr)
 
         if args.local_rank == 0:
-            logger.info("***** Running training *****")
+            logger.info("***** Running ORIGINAL data training *****")
             logger.info("  Num examples = %d", train_length)
             logger.info("  Batch size = %d", args.batch_size)
             logger.info("  Num steps = %d", num_train_optimization_steps * args.gradient_accumulation_steps)
@@ -569,7 +675,7 @@ def main():
             tr_loss, global_step, early_stop = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
                                                scheduler, global_step, local_rank=args.local_rank)
             if args.local_rank == 0:
-                logger.info("Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
+                logger.info("[ORIGINAL] Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
 
                 output_model_file = save_model(epoch, args, model, optimizer, tr_loss, type_name="")
 
@@ -581,7 +687,7 @@ def main():
                 if best_score <= R1:
                     best_score = R1
                     best_output_model_file = output_model_file
-                logger.info("The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
+                logger.info("[ORIGINAL] The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
             
             # Dừng training nếu đã đạt max_steps
             if early_stop:

@@ -56,6 +56,9 @@ def dataloader_msrvtt_test(args, tokenizer, subset="test"):
 
 
 def dataloader_msvd_train(args, tokenizer):
+    # Check if we should use enriched captions
+    use_enriched = hasattr(args, 'enriched') and args.enriched == 'yes'
+    
     msvd_dataset = MSVD_DataLoader(
         subset="train",
         data_path=args.data_path,
@@ -66,6 +69,7 @@ def dataloader_msvd_train(args, tokenizer):
         max_frames=args.max_frames,
         frame_order=args.train_frame_order,
         slice_framepos=args.slice_framepos,
+        use_enriched=use_enriched,
     )
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(msvd_dataset)
