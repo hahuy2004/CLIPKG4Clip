@@ -41,7 +41,7 @@ class CaptionGenerator:
             model_name = "Salesforce/blip2-opt-2.7b"
             
             # Load processor and model (exactly as in the example)
-            self.processor = Blip2Processor.from_pretrained(model_name)
+            self.processor = Blip2Processor.from_pretrained(model_name, use_fast=True)
             
             self.model = Blip2ForConditionalGeneration.from_pretrained(
                 model_name,
