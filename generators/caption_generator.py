@@ -119,19 +119,17 @@ class CaptionGenerator:
         try:
             # Load and preprocess image
             image = Image.open(image_path).convert('RGB')
-            inputs = self.processor(images=image, return_tensors="pt").to(
-                self.device, 
-                dtype=torch.float16 if self.device == 'cuda' else torch.float32
-            )
+            inputs = self.processor(images=image, return_tensors="pt")
+            
+            # Move to device with appropriate dtype
+            if self.device == 'cuda':
+                inputs = inputs.to(self.device, torch.float16)
+            else:
+                inputs = inputs.to(self.device)
             
             # Generate caption
             with torch.no_grad():
-                generated_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=50,
-                    num_beams=5,
-                    do_sample=False
-                )
+                generated_ids = self.model.generate(**inputs)
             
             # Decode caption
             caption = self.processor.batch_decode(
@@ -159,19 +157,17 @@ class CaptionGenerator:
         """
         try:
             # Preprocess image
-            inputs = self.processor(images=pil_image, return_tensors="pt").to(
-                self.device, 
-                dtype=torch.float16 if self.device == 'cuda' else torch.float32
-            )
+            inputs = self.processor(images=pil_image, return_tensors="pt")
+            
+            # Move to device with appropriate dtype
+            if self.device == 'cuda':
+                inputs = inputs.to(self.device, torch.float16)
+            else:
+                inputs = inputs.to(self.device)
             
             # Generate caption
             with torch.no_grad():
-                generated_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=50,
-                    num_beams=5,
-                    do_sample=False
-                )
+                generated_ids = self.model.generate(**inputs)
             
             # Decode caption
             caption = self.processor.batch_decode(
