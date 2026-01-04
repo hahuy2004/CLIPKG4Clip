@@ -16,3 +16,11 @@ PIPELINE_COMMANDS.md
 HUONG_DAN_CHAY.md
 
 /generators/inspect_msvd_captions.py
+/generators_local
+
+/datasets/MSRVTT/frames/*
+/datasets/MSVD/frames/*
+/datasets/MSRVTT/features/*
+/datasets/MSVD/features/*
+/datasets/MSRVTT/segments/*
+/datasets/MSVD/segments/*

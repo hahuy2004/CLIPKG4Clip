@@ -240,6 +240,17 @@ class KTSSegmentor:
             logger.warning(f"Features not found for {video_id}")
             return None
         
+        # Load frame metadata to get original frame indices
+        frames_metadata_path = self.dataset_root / 'frames' / video_id / 'frames_metadata.json'
+        frame_indices_mapping = None
+        if frames_metadata_path.exists():
+            try:
+                with open(frames_metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    frame_indices_mapping = metadata.get('frame_indices', None)
+            except Exception as e:
+                logger.warning(f"Failed to load frame metadata for {video_id}: {e}")
+        
         try:
             features = np.load(features_path)
             
@@ -253,10 +264,36 @@ class KTSSegmentor:
             # Convert change points to segments
             segments = []
             for i in range(len(change_points) - 1):
-                segments.append({
-                    'start_frame': int(change_points[i]),
-                    'end_frame': int(change_points[i + 1])  # Exclusive end in output
-                })
+                start_idx = int(change_points[i])
+                end_idx = int(change_points[i + 1])
+                is_last_segment = (i == len(change_points) - 2)
+                
+                # Map to original frame indices if metadata exists
+                if frame_indices_mapping is not None and len(frame_indices_mapping) > 0:
+                    # Get original frame index at start position
+                    start_frame_orig = frame_indices_mapping[min(start_idx, len(frame_indices_mapping) - 1)]
+                    
+                    # Get original frame index at end position
+                    if is_last_segment:
+                        # Last segment: use the very last frame of the video
+                        end_frame_orig = frame_indices_mapping[-1]
+                    else:
+                        # Note: end_idx is exclusive boundary, use it directly for the boundary frame
+                        end_frame_orig = frame_indices_mapping[min(end_idx, len(frame_indices_mapping) - 1)]
+                    
+                    segments.append({
+                        'start_frame': int(start_frame_orig),
+                        'end_frame': int(end_frame_orig),
+                        'start_idx': start_idx,  # Keep extracted frame index for reference
+                        'end_idx': end_idx
+                    })
+                else:
+                    # Fallback: use extracted frame indices
+                    logger.warning(f"No frame metadata found for {video_id}, using extracted indices")
+                    segments.append({
+                        'start_frame': start_idx,
+                        'end_frame': end_idx
+                    })
             
             # Save segments
             output_data = {

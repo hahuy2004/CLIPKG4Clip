@@ -18,11 +18,8 @@ import csv
 import gc
 import torch
 
-# Import pipeline modules
-from generators.frame_extractor import FrameExtractor
-from generators.feature_extractor import CLIPFeatureExtractor
-from generators.kts_segmentor import KTSSegmentor
-from generators.caption_generator import CaptionGenerator
+# Lazy imports - modules will be imported only when needed
+# This prevents unnecessary dependency loading (e.g., BLIP-2 for step 1)
 
 # Setup logging
 logging.basicConfig(
@@ -145,6 +142,9 @@ class TextEnrichmentPipeline:
         start_time = time.time()
         
         try:
+            # Lazy import
+            from generators.frame_extractor import FrameExtractor
+            
             extractor = FrameExtractor(
                 self.dataset_path,
                 target_size=target_size,
@@ -183,6 +183,9 @@ class TextEnrichmentPipeline:
         start_time = time.time()
         
         try:
+            # Lazy import
+            from generators.feature_extractor import CLIPFeatureExtractor
+            
             extractor = CLIPFeatureExtractor(
                 self.dataset_path,
                 device=self.device
@@ -222,6 +225,9 @@ class TextEnrichmentPipeline:
         start_time = time.time()
         
         try:
+            # Lazy import
+            from generators.kts_segmentor import KTSSegmentor
+            
             segmentor = KTSSegmentor(
                 self.dataset_path,
                 num_segments=num_segments,
@@ -260,6 +266,9 @@ class TextEnrichmentPipeline:
         start_time = time.time()
         
         try:
+            # Lazy import
+            from generators.caption_generator import CaptionGenerator
+            
             generator = CaptionGenerator(
                 self.dataset_path,
                 pretrained_dir=str(self.pretrained_dir),
@@ -414,10 +423,10 @@ def main():
                        help='Target frame size (square)')
     
     # Segmentation arguments
-    parser.add_argument('--num_segments', type=int, default=None,
-                       help='Target number of segments per video (None for automatic)')
-    parser.add_argument('--penalty_coef', type=float, default=1.0,
-                       help='Penalty coefficient for KTS model selection (default: 1.0)')
+    parser.add_argument('--num_segments', type=int, default=5,
+                       help='Target number of segments per video (recommended: 3-5 for 12-frame videos). None for automatic selection')
+    parser.add_argument('--penalty_coef', type=float, default=0.5,
+                       help='Penalty coefficient for KTS model selection (lower = more segments, default: 0.5)')
     
     # Output arguments
     parser.add_argument('--output', type=str, default='enriched_captions.json',

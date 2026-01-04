@@ -6,6 +6,8 @@ import os
 import json
 import torch
 import pickle
+import cv2
+import numpy as np
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
@@ -29,7 +31,7 @@ class CaptionGenerator:
             dataset_name: Name of dataset (for format detection: 'MSRVTT', 'MSVD', etc.)
         """
         self.dataset_root = Path(dataset_root)
-        self.frames_dir = self.dataset_root / 'frames'
+        self.videos_dir = self.dataset_root / 'videos'
         self.segments_dir = self.dataset_root / 'segments'
         self.device = device if torch.cuda.is_available() else 'cpu'
         self.pretrained_dir = Path(pretrained_dir)
@@ -63,6 +65,46 @@ class CaptionGenerator:
         except Exception as e:
             logger.error(f"Failed to load BLIP-2 model: {str(e)}")
             raise
+    
+    def extract_frame_from_video(self, video_path, frame_index):
+        """
+        Extract a single frame from video at specified index.
+        
+        Args:
+            video_path: Path to video file
+            frame_index: Frame index to extract
+            
+        Returns:
+            PIL Image or None if extraction fails
+        """
+        try:
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                logger.error(f"Failed to open video: {video_path}")
+                return None
+            
+            # Set frame position
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            
+            # Read frame
+            ret, frame = cap.read()
+            cap.release()
+            
+            if not ret:
+                logger.warning(f"Failed to read frame {frame_index} from {video_path}")
+                return None
+            
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Convert to PIL Image
+            pil_image = Image.fromarray(frame_rgb)
+            
+            return pil_image
+            
+        except Exception as e:
+            logger.error(f"Error extracting frame {frame_index} from {video_path}: {str(e)}")
+            return None
     
     def generate_caption(self, image_path):
         """
@@ -105,9 +147,50 @@ class CaptionGenerator:
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return ""
     
+    def generate_caption_from_image(self, pil_image):
+        """
+        Generate caption for a PIL Image.
+        
+        Args:
+            pil_image: PIL Image object
+            
+        Returns:
+            Generated caption string
+        """
+        try:
+            # Preprocess image
+            inputs = self.processor(images=pil_image, return_tensors="pt").to(
+                self.device, 
+                dtype=torch.float16 if self.device == 'cuda' else torch.float32
+            )
+            
+            # Generate caption
+            with torch.no_grad():
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=50,
+                    num_beams=5,
+                    do_sample=False
+                )
+            
+            # Decode caption
+            caption = self.processor.batch_decode(
+                generated_ids, 
+                skip_special_tokens=True
+            )[0].strip()
+            
+            return caption
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate caption from image: {str(e)}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
+            return ""
+    
     def caption_video(self, video_id):
         """
         Generate captions for all segments of a video.
+        Extract frames directly from video at middle position of each segment.
         
         Args:
             video_id: Video identifier
@@ -121,51 +204,58 @@ class CaptionGenerator:
             logger.warning(f"Segments not found for {video_id}")
             return None
         
+        # Find video file
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv']
+        video_path = None
+        for ext in video_extensions:
+            potential_path = self.videos_dir / f"{video_id}{ext}"
+            if potential_path.exists():
+                video_path = potential_path
+                break
+            # Try uppercase
+            potential_path = self.videos_dir / f"{video_id}{ext.upper()}"
+            if potential_path.exists():
+                video_path = potential_path
+                break
+        
+        if video_path is None:
+            logger.warning(f"Video file not found for {video_id}")
+            return None
+        
         try:
             with open(segments_path, 'r') as f:
                 segments_data = json.load(f)
             
             segments = segments_data['segments']
-            frames_dir = self.frames_dir / video_id
-            
-            if not frames_dir.exists():
-                logger.warning(f"Frames directory not found for {video_id}")
-                return None
-            
-            # Get all frame files
-            frame_files = sorted(list(frames_dir.glob('*.jpg')) + 
-                               list(frames_dir.glob('*.png')))
-            
-            if not frame_files:
-                logger.warning(f"No frames found for {video_id}")
-                return None
-            
             captions = []
             
             # Generate caption for each segment
             for segment in segments:
-                start_frame = segment.get('start_frame')
-                end_frame = segment.get('end_frame')
+                start_frame = segment.get('start_frame')  # Original frame index from video
+                end_frame = segment.get('end_frame')      # Original frame index from video
                 
                 # Validate frame indices
                 if start_frame is None or end_frame is None:
                     logger.warning(f"Skipping segment with None frame indices for {video_id}: start={start_frame}, end={end_frame}")
+                    captions.append("")
                     continue
                 
-                # Calculate middle frame index
-                middle_frame_idx = (start_frame + end_frame) // 2
+                # Calculate middle frame index in original video
+                middle_frame_index = (start_frame + end_frame) // 2
                 
-                # Ensure index is within bounds
-                middle_frame_idx = max(0, min(middle_frame_idx, len(frame_files) - 1))
+                # Extract frame directly from video
+                pil_image = self.extract_frame_from_video(video_path, middle_frame_index)
                 
-                # Get middle frame path
-                middle_frame_path = frame_files[middle_frame_idx]
+                if pil_image is None:
+                    logger.warning(f"Failed to extract frame {middle_frame_index} from {video_id}")
+                    captions.append("")
+                    continue
                 
-                # Generate caption
-                caption = self.generate_caption(middle_frame_path)
+                # Generate caption from extracted frame
+                caption = self.generate_caption_from_image(pil_image)
                 captions.append(caption)
                 
-                logger.debug(f"{video_id} segment [{start_frame}-{end_frame}]: {caption}")
+                logger.debug(f"{video_id} segment [{start_frame}-{end_frame}] middle_frame={middle_frame_index}: {caption}")
             
             logger.debug(f"Generated {len(captions)} captions for {video_id}")
             return captions

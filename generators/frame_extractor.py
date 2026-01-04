@@ -3,6 +3,7 @@ Frame Extractor Module
 Extracts and resizes frames from video files uniformly.
 """
 import os
+import json
 import cv2
 import numpy as np
 from pathlib import Path
@@ -68,6 +69,7 @@ class FrameExtractor:
                 frame_indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int)
             
             saved_count = 0
+            extracted_frame_indices = []  # Store original frame indices
             
             # Extract frames at specified indices
             for idx, frame_idx in enumerate(frame_indices):
@@ -88,7 +90,19 @@ class FrameExtractor:
                 frame_filename = f"frame_{idx:04d}.jpg"
                 frame_path = output_dir / frame_filename
                 cv2.imwrite(str(frame_path), resized_frame)
+                extracted_frame_indices.append(int(frame_idx))  # Save original frame index
                 saved_count += 1
+            
+            # Save metadata with original frame indices
+            metadata = {
+                'total_frames': int(total_frames),
+                'extracted_count': saved_count,
+                'frame_indices': extracted_frame_indices  # Original frame indices from video
+            }
+            metadata_path = output_dir / 'frames_metadata.json'
+            with open(metadata_path, 'w') as f:
+                import json
+                json.dump(metadata, f, indent=2)
             
             cap.release()
             logger.debug(f"Extracted {saved_count} frames from {video_path.name}")
@@ -124,7 +138,13 @@ class FrameExtractor:
             logger.warning(f"No video files found in {self.videos_dir}")
             return {'processed': 0, 'skipped': 0, 'failed': 0}
         
-        logger.info(f"Found {len(video_files)} videos to process")
+        # Filter by whitelist first to show accurate count
+        if whitelist_video_ids is not None:
+            video_files_filtered = [vf for vf in video_files if vf.stem in whitelist_video_ids]
+            logger.info(f"Found {len(video_files)} videos in directory, processing {len(video_files_filtered)} training videos")
+            video_files = video_files_filtered
+        else:
+            logger.info(f"Found {len(video_files)} videos to process")
         
         stats = {'processed': 0, 'skipped': 0, 'failed': 0, 'filtered': 0}
         
@@ -132,12 +152,6 @@ class FrameExtractor:
         for video_path in tqdm(video_files, desc="Extracting frames"):
             # Get video ID (filename without extension)
             video_id = video_path.stem
-            
-            # Filter by whitelist if provided
-            if whitelist_video_ids is not None and video_id not in whitelist_video_ids:
-                logger.debug(f"Filtering out {video_id} (not in training split)")
-                stats['filtered'] += 1
-                continue
             
             # Create output directory for this video
             output_dir = self.frames_dir / video_id
