@@ -20,13 +20,12 @@ logger = logging.getLogger(__name__)
 class CaptionGenerator:
     """Generate captions for video segments using BLIP-2."""
     
-    def __init__(self, dataset_root, pretrained_dir='./pretrained', device='cuda', dataset_name=None):
+    def __init__(self, dataset_root, device='cuda', dataset_name=None):
         """
         Initialize Caption Generator.
         
         Args:
             dataset_root: Root directory of dataset (e.g., 'dataset/MSRVTT')
-            pretrained_dir: Directory to cache pretrained models
             device: Device to run inference on ('cuda' or 'cpu')
             dataset_name: Name of dataset (for format detection: 'MSRVTT', 'MSVD', etc.)
         """
@@ -34,26 +33,18 @@ class CaptionGenerator:
         self.videos_dir = self.dataset_root / 'videos'
         self.segments_dir = self.dataset_root / 'segments'
         self.device = device if torch.cuda.is_available() else 'cpu'
-        self.pretrained_dir = Path(pretrained_dir)
         self.dataset_name = dataset_name
-        
-        # Create pretrained directory
-        self.pretrained_dir.mkdir(parents=True, exist_ok=True)
         
         # Load BLIP-2 model
         logger.info(f"Loading BLIP-2 model on {self.device}")
         try:
             model_name = "Salesforce/blip2-opt-2.7b-coco"
             
-            # Load processor and model with custom cache directory
-            self.processor = Blip2Processor.from_pretrained(
-                model_name,
-                cache_dir=str(self.pretrained_dir)
-            )
+            # Load processor and model
+            self.processor = Blip2Processor.from_pretrained(model_name)
             
             self.model = Blip2ForConditionalGeneration.from_pretrained(
                 model_name,
-                cache_dir=str(self.pretrained_dir),
                 torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32
             )
             
@@ -439,15 +430,13 @@ class CaptionGenerator:
         logger.info(f"Saved captions (simple format) to {json_path}")
 
 
-def generate_captions(dataset_name, dataset_root='datasets', pretrained_dir='./pretrained', 
-                     device='cuda', output_file='enriched_captions.json'):
+def generate_captions(dataset_name, dataset_root='datasets', device='cuda', output_file='enriched_captions.json'):
     """
     Convenience function to generate captions for a dataset.
     
     Args:
         dataset_name: Name of the dataset (e.g., 'MSRVTT')
         dataset_root: Root directory containing datasets
-        pretrained_dir: Directory to cache pretrained models
         device: Device to run on ('cuda' or 'cpu')
         output_file: Name of output JSON file
         
@@ -455,7 +444,7 @@ def generate_captions(dataset_name, dataset_root='datasets', pretrained_dir='./p
         Tuple of (enriched_captions dict, stats dict)
     """
     dataset_path = Path(dataset_root) / dataset_name
-    generator = CaptionGenerator(dataset_path, pretrained_dir=pretrained_dir, device=device, dataset_name=dataset_name)
+    generator = CaptionGenerator(dataset_path, device=device, dataset_name=dataset_name)
     return generator.process_dataset(output_file=output_file)
 
 
@@ -468,8 +457,6 @@ if __name__ == "__main__":
                        help='Name of the dataset')
     parser.add_argument('--dataset_root', type=str, default='dataset',
                        help='Root directory containing datasets')
-    parser.add_argument('--pretrained_dir', type=str, default='./pretrained',
-                       help='Directory to cache pretrained models')
     parser.add_argument('--device', type=str, default='cuda',
                        choices=['cuda', 'cpu'],
                        help='Device to run on')
@@ -481,7 +468,6 @@ if __name__ == "__main__":
     captions, stats = generate_captions(
         dataset_name=args.dataset_name,
         dataset_root=args.dataset_root,
-        pretrained_dir=args.pretrained_dir,
         device=args.device,
         output_file=args.output
     )

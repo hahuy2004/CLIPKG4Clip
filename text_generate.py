@@ -98,8 +98,7 @@ def load_train_split(dataset_name, dataset_root='datasets'):
 class TextEnrichmentPipeline:
     """Complete pipeline for video text enrichment."""
     
-    def __init__(self, dataset_name, dataset_root='datasets', device='cuda', 
-                 pretrained_dir='./pretrained'):
+    def __init__(self, dataset_name, dataset_root='datasets', device='cuda'):
         """
         Initialize the pipeline.
         
@@ -107,16 +106,11 @@ class TextEnrichmentPipeline:
             dataset_name: Name of the dataset (e.g., 'MSRVTT')
             dataset_root: Root directory containing datasets (default: 'datasets')
             device: Device to run inference on
-            pretrained_dir: Directory to cache pretrained models
         """
         self.dataset_name = dataset_name
         self.dataset_root = Path(dataset_root)
         self.dataset_path = self.dataset_root / dataset_name
         self.device = device
-        self.pretrained_dir = Path(pretrained_dir)
-        
-        # Create pretrained directory
-        self.pretrained_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"Initializing pipeline for dataset: {dataset_name}")
         logger.info(f"Dataset path: {self.dataset_path}")
@@ -271,7 +265,6 @@ class TextEnrichmentPipeline:
             
             generator = CaptionGenerator(
                 self.dataset_path,
-                pretrained_dir=str(self.pretrained_dir),
                 device=self.device,
                 dataset_name=self.dataset_name
             )
@@ -413,8 +406,6 @@ def main():
     parser.add_argument('--device', type=str, default='cuda',
                        choices=['cuda', 'cpu'],
                        help='Device to run inference on')
-    parser.add_argument('--pretrained_dir', type=str, default='./pretrained',
-                       help='Directory to cache pretrained models')
     
     # Frame extraction arguments
     parser.add_argument('--num_frames', type=int, default=12,
@@ -453,8 +444,7 @@ def main():
     pipeline = TextEnrichmentPipeline(
         dataset_name=args.dataset_name,
         dataset_root=args.dataset_root,
-        device=args.device,
-        pretrained_dir=args.pretrained_dir
+        device=args.device
     )
     
     # Load training split if needed
