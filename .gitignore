@@ -6,6 +6,7 @@
 /datasets/MSRVTT/videos/*.mp4
 /datasets/MSVD/videos/*.avi
 /datasets/MSVD/MSVD_Videos.zip
+/datasets/MSRVTT/videos.zip
 
 /datasets/MSRVTT/kg/*.hdf5
 /datasets/MSVD/kg/*.hdf5
