@@ -16,6 +16,7 @@ README_PIPELINE.md
 TRAINING_SPLIT_UPDATE.md
 PIPELINE_COMMANDS.md
 HUONG_DAN_CHAY.md
+split_segments.py
 
 format_json.py
 /datasets/MSRVTT/MSRVTT_data_formatted.json
@@ -28,7 +29,9 @@ format_json.py
 /datasets/MSRVTT/features/*
 /datasets/MSVD/features/*
 /datasets/MSRVTT/segments/*
+/datasets/MSRVTT/segments_split/*
 /datasets/MSVD/segments/*
+/datasets/MSRVTT/segments.zip
 
 __pycache__
 /modules/__pycache__

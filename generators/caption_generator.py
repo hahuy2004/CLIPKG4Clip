@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class CaptionGenerator:
     """Generate captions for video segments using BLIP-2."""
     
-    def __init__(self, dataset_root, device='cuda', dataset_name=None):
+    def __init__(self, dataset_root, device='cuda', dataset_name=None, split=None):
         """
         Initialize Caption Generator.
         
@@ -28,12 +28,21 @@ class CaptionGenerator:
             dataset_root: Root directory of dataset (e.g., 'dataset/MSRVTT')
             device: Device to run inference on ('cuda' or 'cpu')
             dataset_name: Name of dataset (for format detection: 'MSRVTT', 'MSVD', etc.)
+            split: Split number for MSRVTT dataset (1, 2, or 3). If provided, uses segments_split/part{split}
         """
         self.dataset_root = Path(dataset_root)
         self.videos_dir = self.dataset_root / 'videos'
-        self.segments_dir = self.dataset_root / 'segments'
-        self.device = device if torch.cuda.is_available() else 'cpu'
         self.dataset_name = dataset_name
+        self.split = split
+        
+        # Determine segments directory based on split parameter
+        if split is not None and dataset_name and dataset_name.upper() == 'MSRVTT':
+            self.segments_dir = self.dataset_root / 'segments_split' / f'part{split}'
+            logger.info(f"Using MSRVTT split {split}: {self.segments_dir}")
+        else:
+            self.segments_dir = self.dataset_root / 'segments'
+        
+        self.device = device if torch.cuda.is_available() else 'cpu'
         
         # Load BLIP-2 model
         logger.info(f"Loading BLIP-2 model on {self.device}")
@@ -327,7 +336,10 @@ class CaptionGenerator:
     
     def _save_json_format(self, enriched_captions, output_file):
         """Save as simple JSON format."""
-        output_path = self.dataset_root / output_file
+        # For generic datasets, use enriched_reference.json
+        dataset_prefix = self.dataset_name.upper() if self.dataset_name else 'dataset'
+        reference_filename = f"{dataset_prefix}_enriched_reference.json"
+        output_path = self.dataset_root / reference_filename
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(enriched_captions, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved captions (JSON format) to {output_path}")
@@ -338,7 +350,7 @@ class CaptionGenerator:
         
         Format (matching MSRVTT_data.json structure):
         {
-            "videos": [...]  # copied from original MSRVTT_data.json
+            "videos": [...]  # copied from original MSRVTT_data.json (only if split is None)
             "sentences": [
                 {"video_id": "video0", "caption": "..."},
                 ...
@@ -353,41 +365,56 @@ class CaptionGenerator:
                     "caption": caption
                 })
         
-        # Load "videos" field from original MSRVTT_data.json
-        # Path: datasets/MSRVTT/MSRVTT_data.json
-        videos_data = []
-        original_json_path = self.dataset_root / 'MSRVTT_data.json'
+        # Determine suffix for split files
+        if self.split is not None:
+            suffix = f"_split_{self.split}"
+        else:
+            suffix = ""
         
-        logger.info(f"Looking for original MSRVTT_data.json at: {original_json_path.absolute()}")
+        # Create output data based on whether we have split or not
+        if self.split is None:
+            # Full dataset: Load "videos" field from original MSRVTT_data.json
+            videos_data = []
+            original_json_path = self.dataset_root / 'MSRVTT_data.json'
+            
+            logger.info(f"Looking for original MSRVTT_data.json at: {original_json_path.absolute()}")
+            
+            try:
+                if original_json_path.exists():
+                    logger.info(f"Loading videos metadata from {original_json_path}")
+                    with open(original_json_path, 'r', encoding='utf-8') as f:
+                        original_data = json.load(f)
+                        videos_data = original_data.get('videos', [])
+                        logger.info(f"Successfully loaded {len(videos_data)} videos metadata from MSRVTT_data.json")
+                else:
+                    logger.error(f"Original MSRVTT_data.json not found at {original_json_path.absolute()}")
+                    logger.warning("Using empty 'videos' array (may cause issues with parent-child video mapping)")
+            except Exception as e:
+                logger.error(f"Failed to load videos data from MSRVTT_data.json: {e}")
+                logger.warning("Using empty 'videos' array")
+            
+            # Full dataset format: videos + sentences
+            output_data = {
+                "videos": videos_data,
+                "sentences": sentences
+            }
+        else:
+            # Split dataset: only sentences, no videos field
+            logger.info(f"Processing split {self.split}, output will contain only 'sentences' field")
+            output_data = {
+                "sentences": sentences
+            }
         
-        try:
-            if original_json_path.exists():
-                logger.info(f"Loading videos metadata from {original_json_path}")
-                with open(original_json_path, 'r', encoding='utf-8') as f:
-                    original_data = json.load(f)
-                    videos_data = original_data.get('videos', [])
-                    logger.info(f"Successfully loaded {len(videos_data)} videos metadata from MSRVTT_data.json")
-            else:
-                logger.error(f"Original MSRVTT_data.json not found at {original_json_path.absolute()}")
-                logger.warning("Using empty 'videos' array (may cause issues with parent-child video mapping)")
-        except Exception as e:
-            logger.error(f"Failed to load videos data from MSRVTT_data.json: {e}")
-            logger.warning("Using empty 'videos' array")
-        
-        # Match original MSRVTT_data.json structure: videos first, then sentences
-        output_data = {
-            "videos": videos_data,
-            "sentences": sentences
-        }
-        
-        # Save as JSON
-        output_path = self.dataset_root / output_file.replace('.json', '_enriched.json')
+        # Save as JSON with new naming convention
+        data_filename = f"MSRVTT_enriched_data{suffix}.json"
+        output_path = self.dataset_root / data_filename
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved captions (MSRVTT format) to {output_path}")
         
-        # Also save simple format for reference
-        simple_path = self.dataset_root / output_file
+        # Also save simple format for reference with new naming convention
+        reference_filename = f"MSRVTT_enriched_reference{suffix}.json"
+        simple_path = self.dataset_root / reference_filename
         with open(simple_path, 'w', encoding='utf-8') as f:
             json.dump(enriched_captions, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved captions (simple format) to {simple_path}")
@@ -414,20 +441,20 @@ class CaptionGenerator:
                 words = caption.lower().split()
                 msvd_captions[video_id].append(words)
         
-        # Save as pickle file
-        pickle_path = self.dataset_root / 'enriched-captions.pkl'
+        # Save as pickle file with new naming convention
+        pickle_path = self.dataset_root / 'MSVD_enriched_data.pkl'
         with open(pickle_path, 'wb') as f:
             pickle.dump(msvd_captions, f)
         logger.info(f"Saved captions (MSVD pickle format) to {pickle_path}")
         
-        # Also save simple JSON for reference
-        json_path = self.dataset_root / output_file
+        # Also save simple JSON for reference with new naming convention
+        json_path = self.dataset_root / 'MSVD_enriched_reference.json'
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(enriched_captions, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved captions (simple format) to {json_path}")
 
 
-def generate_captions(dataset_name, dataset_root='datasets', device='cuda', output_file='enriched_captions.json'):
+def generate_captions(dataset_name, dataset_root='datasets', device='cuda', output_file='enriched_captions.json', split=None):
     """
     Convenience function to generate captions for a dataset.
     
@@ -436,12 +463,13 @@ def generate_captions(dataset_name, dataset_root='datasets', device='cuda', outp
         dataset_root: Root directory containing datasets
         device: Device to run on ('cuda' or 'cpu')
         output_file: Name of output JSON file
+        split: Split number for MSRVTT dataset (1, 2, or 3)
         
     Returns:
         Tuple of (enriched_captions dict, stats dict)
     """
     dataset_path = Path(dataset_root) / dataset_name
-    generator = CaptionGenerator(dataset_path, device=device, dataset_name=dataset_name)
+    generator = CaptionGenerator(dataset_path, device=device, dataset_name=dataset_name, split=split)
     return generator.process_dataset(output_file=output_file)
 
 
@@ -459,6 +487,9 @@ if __name__ == "__main__":
                        help='Device to run on')
     parser.add_argument('--output', type=str, default='enriched_captions.json',
                        help='Output filename')
+    parser.add_argument('--split', type=int, default=None,
+                       choices=[1, 2, 3],
+                       help='Split number for MSRVTT dataset (1, 2, or 3)')
     
     args = parser.parse_args()
     
@@ -466,7 +497,8 @@ if __name__ == "__main__":
         dataset_name=args.dataset_name,
         dataset_root=args.dataset_root,
         device=args.device,
-        output_file=args.output
+        output_file=args.output,
+        split=args.split
     )
     
     print(f"\nCaption generation complete:")
