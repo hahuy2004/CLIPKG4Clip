@@ -17,6 +17,9 @@ TRAINING_SPLIT_UPDATE.md
 PIPELINE_COMMANDS.md
 HUONG_DAN_CHAY.md
 
+format_json.py
+/datasets/MSRVTT/MSRVTT_data_formatted.json
+
 /generators/inspect_msvd_captions.py
 /generators_local
 
