@@ -98,19 +98,21 @@ def load_train_split(dataset_name, dataset_root='datasets'):
 class TextEnrichmentPipeline:
     """Complete pipeline for video text enrichment."""
     
-    def __init__(self, dataset_name, dataset_root='datasets', device='cuda'):
+    def __init__(self, dataset_name, dataset_root='datasets', device='cuda', split=None):
         """
         Initialize the pipeline.
         
         Args:
-            dataset_name: Name of the dataset (e.g., 'MSRVTT')
-            dataset_root: Root directory containing datasets (default: 'datasets')
-            device: Device to run inference on
+            dataset_name: Name of the dataset (e.g., 'MSRVTT', 'MSVD')
+            dataset_root: Root directory containing datasets
+            device: Device to run inference on ('cuda' or 'cpu')
+            split: Split number for MSRVTT dataset (1, 2, or 3)
         """
         self.dataset_name = dataset_name
         self.dataset_root = Path(dataset_root)
         self.dataset_path = self.dataset_root / dataset_name
         self.device = device
+        self.split = split
         
         logger.info(f"Initializing pipeline for dataset: {dataset_name}")
         logger.info(f"Dataset path: {self.dataset_path}")
@@ -255,6 +257,8 @@ class TextEnrichmentPipeline:
         """
         logger.info("=" * 70)
         logger.info("STEP 4/4: Generating Captions using BLIP-2")
+        if self.split is not None:
+            logger.info(f"Processing MSRVTT split {self.split}")
         logger.info("=" * 70)
         
         start_time = time.time()
@@ -266,7 +270,8 @@ class TextEnrichmentPipeline:
             generator = CaptionGenerator(
                 self.dataset_path,
                 device=self.device,
-                dataset_name=self.dataset_name
+                dataset_name=self.dataset_name,
+                split=self.split
             )
             
             captions, stats = generator.process_dataset(output_file=output_file, whitelist_video_ids=whitelist_video_ids)
@@ -438,13 +443,19 @@ def main():
                        default='all',
                        help='Which step to run (1-4 or all)')
     
+    # MSRVTT split control (only for step 4)
+    parser.add_argument('--split', type=int, default=None,
+                       choices=[1, 2, 3],
+                       help='Split number for MSRVTT dataset (1, 2, or 3). Only applicable for step 4')
+    
     args = parser.parse_args()
     
     # Initialize pipeline
     pipeline = TextEnrichmentPipeline(
         dataset_name=args.dataset_name,
         dataset_root=args.dataset_root,
-        device=args.device
+        device=args.device,
+        split=args.split
     )
     
     # Load training split if needed
