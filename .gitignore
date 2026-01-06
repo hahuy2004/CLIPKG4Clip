@@ -37,3 +37,6 @@ __pycache__
 /modules/__pycache__
 /ckpts/ckpt_msvd_retrieval_looseType/*
 /dataloaders/__pycache__
+
+datasets/MSRVTT/MSRVTT_enriched_data_split_*.json
+/datasets/MSRVTT/MSRVTT_enriched_reference_split_*.json
