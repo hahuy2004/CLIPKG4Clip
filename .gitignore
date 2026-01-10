@@ -40,3 +40,7 @@ __pycache__
 
 datasets/MSRVTT/MSRVTT_enriched_data_split_*.json
 /datasets/MSRVTT/MSRVTT_enriched_reference_split_*.json
+
+/dataloaders/dataloader_activitynet_retrieval.py
+/dataloaders/dataloader_didemo_retrieval.py
+/dataloaders/dataloader_lsmdc_retrieval.py
