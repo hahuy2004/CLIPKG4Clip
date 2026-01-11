@@ -31,6 +31,9 @@ Your task is to generate EXACTLY {n} rewritten versions of the caption, followin
 6. Each rewritten caption must be no more than 10 words longer than the original caption.
 7. The original caption must NOT appear in the rewritten outputs.
 8. No two rewritten captions may be identical.
+9. Do NOT use commas (,), quotation marks ("), semicolons (;), or colons (:).
+10. Each rewritten caption must be a single simple sentence without punctuation inside the sentence.
+11. Use conjunctions such as "and", "while", or "as" instead of punctuation.
 
 The input caption is:
 "{caption}"
