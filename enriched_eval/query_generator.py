@@ -76,13 +76,22 @@ def generate_enriched_queries(
         with open(output_json_path, 'r', encoding='utf-8') as f:
             enriched_data = json.load(f)
     
-    print(f"Generating enriched queries for {len(input_captions)} captions...")
-    print(f"Using model: {model}, variations per caption: {n_variations}")
+    total_captions = len(input_captions)
+    already_processed = len(enriched_data)
+    remaining = total_captions - already_processed
     
-    for video_id, original_caption in tqdm(input_captions.items()):
+    print(f"Generating enriched queries for {total_captions} captions...")
+    print(f"Using model: {model}, variations per caption: {n_variations}")
+    if already_processed > 0:
+        print(f"Already processed: {already_processed}, Remaining: {remaining}")
+    
+    processed_count = 0
+    for video_id, original_caption in tqdm(input_captions.items(), desc="Enriching captions"):
         # Skip if already processed
         if video_id in enriched_data:
             continue
+        
+        processed_count += 1
         
         try:
             prompt = PROMPT_TEMPLATE.format(n=n_variations, caption=original_caption)
@@ -133,9 +142,10 @@ def generate_enriched_queries(
             enriched_data[video_id] = [original_caption] + variations
             
             # Save periodically
-            if len(enriched_data) % 10 == 0:
+            if processed_count % 10 == 0:
                 with open(output_json_path, 'w', encoding='utf-8') as f:
                     json.dump(enriched_data, f, indent=2, ensure_ascii=False)
+                print(f"\n✅ Progress: {len(enriched_data)}/{total_captions} completed, saved checkpoint")
             
             # Rate limiting
             time.sleep(sleep_time)

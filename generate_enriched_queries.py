@@ -367,25 +367,7 @@ Examples:
         print(f"\n⚠️  Limiting to first {args.max_samples} samples for testing")
         input_captions = dict(list(input_captions.items())[:args.max_samples])
     
-    # Show examples
-    print("\n📝 Sample captions:")
-    for i, (vid, cap) in enumerate(list(input_captions.items())[:3]):
-        print(f"  {vid}: {cap[:80]}...")
-    
-    # Estimate cost and time
-    total_samples = len(input_captions)
-    estimated_time_min = (total_samples * args.sleep_time) / 60
-    estimated_cost = total_samples * 0.02  # Rough estimate
-    
-    print(f"\n⏱️  Estimated time: ~{estimated_time_min:.1f} minutes")
-    print(f"💰 Estimated cost: ${estimated_cost:.2f} (approximate)")
-    print(f"📊 Total API calls: {total_samples}")
-    
-    # Confirm
-    response = input("\n▶️  Continue? (yes/no): ")
-    if response.lower() not in ['yes', 'y']:
-        print("❌ Cancelled.")
-        return
+    print(f"\n📊 Total captions to enrich: {len(input_captions)}")
     
     # Generate enriched queries
     print("\n" + "="*70)
@@ -425,35 +407,16 @@ Examples:
         print(f"  📄 Pickle: {args.output_pkl}")
         print(f"  📄 Reference JSON: {args.output_reference}")
     
-    # Show sample output
     print("\n" + "="*70)
-    print("SAMPLE OUTPUT:")
-    print("="*70)
-    sample_vid = list(enriched_data.keys())[0]
-    sample_captions = enriched_data[sample_vid]
-    
-    print(f"\n{sample_vid}:")
-    print(f"  [0] Original: {sample_captions[0]}")
-    for j in range(1, min(4, len(sample_captions))):
-        print(f"  [{j}] Enriched: {sample_captions[j]}")
-    print(f"  ... ({len(sample_captions)} total captions)")
-    
-    # Next steps
-    print("\n" + "="*70)
-    print("NEXT STEPS:")
+    print("✨ COMPLETED!")
     print("="*70)
     
     if args.datatype == "msrvtt":
-        print("1. Verify the CSV file has correct format")
-        print("2. Use the CSV file for MSRVTT enriched evaluation")
-        print(f"   File: {args.output_csv}")
-        
+        print(f"📄 CSV output: {args.output_csv}")
+        print(f"📄 Reference JSON: {args.output_reference}")
     elif args.datatype == "msvd":
-        print("1. Verify the pickle file has correct format")
-        print("2. Use the pickle file for MSVD enriched evaluation")
-        print(f"   File: {args.output_pkl}")
-    
-    print("\n✨ Done!")
+        print(f"📄 Pickle output: {args.output_pkl}")
+        print(f"📄 Reference JSON: {args.output_reference}")
 
 
 if __name__ == "__main__":
