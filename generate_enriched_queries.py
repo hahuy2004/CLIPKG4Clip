@@ -96,7 +96,7 @@ def load_msvd_data(test_list_path, raw_captions_path):
     return test_data
 
 
-def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path):
+def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path, n_variations=10):
     """
     Save enriched MSRVTT data to CSV.
     Format: key, vid_key, video_id, sentence
@@ -106,7 +106,7 @@ def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path):
     - ret{i}_1: enriched variation 1
     - ret{i}_2: enriched variation 2
     - ...
-    - ret{i}_10: enriched variation 10
+    - ret{i}_{n}: enriched variation n
     """
     print(f"Saving enriched MSRVTT CSV to: {output_csv_path}")
     
@@ -115,13 +115,13 @@ def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path):
         vid_key = original_data[key]['vid_key']
         video_id = original_data[key]['video_id']
         
-        # Get enriched captions (11 total: 1 original + 10 variations)
+        # Get enriched captions (n_variations+1 total: 1 original + n_variations)
         # Use key instead of video_id for lookup
         if key in enriched_data:
             captions = enriched_data[key]
         else:
             # Fallback if enrichment failed
-            captions = [original_data[key]['sentence']] * 11
+            captions = [original_data[key]['sentence']] * (n_variations + 1)
         
         # Original query
         rows.append({
@@ -131,8 +131,8 @@ def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path):
             'sentence': captions[0]
         })
         
-        # Enriched queries
-        for j in range(1, 11):
+        # Enriched queries (only n_variations, not hardcoded 10)
+        for j in range(1, n_variations + 1):
             enriched_key = f"{key}_{j}"
             rows.append({
                 'key': enriched_key,
@@ -392,7 +392,7 @@ Examples:
     print("="*70)
     
     if args.datatype == "msrvtt":
-        save_msrvtt_enriched_csv(enriched_data, original_data, args.output_csv)
+        save_msrvtt_enriched_csv(enriched_data, original_data, args.output_csv, args.n_variations)
         save_reference_json(enriched_data, args.output_reference)
         
         print(f"\n✅ MSRVTT outputs saved:")
