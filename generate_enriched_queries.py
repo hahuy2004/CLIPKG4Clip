@@ -1,5 +1,5 @@
 """
-Standalone script for generating enriched queries using GPT-4
+Standalone script for generating enriched queries using GPT-5-mini
 Run this script BEFORE evaluation to prepare enriched data
 
 Usage for MSRVTT:
@@ -180,7 +180,7 @@ def save_reference_json(enriched_data, output_json_path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate enriched queries using GPT-4",
+        description="Generate enriched queries using GPT-5-mini",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -218,14 +218,14 @@ Examples:
     parser.add_argument("--output_reference", type=str, default=None,
                        help="Output reference JSON path (for debugging)")
     
-    # GPT-4 parameters
+    # GPT-5-mini parameters
     parser.add_argument("--api_key", type=str, default=DEFAULT_API_KEY,
                        help="OpenAI API key")
     parser.add_argument("--n_variations", type=int, default=10,
                        help="Number of variations per caption (default: 10)")
-    parser.add_argument("--model", type=str, default="gpt-4",
-                       choices=["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
-                       help="OpenAI model to use (default: gpt-4)")
+    parser.add_argument("--model", type=str, default="gpt-5-mini",
+                       choices=["gpt-5-mini", "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
+                       help="OpenAI model to use (default: gpt-5-mini)")
     parser.add_argument("--sleep_time", type=float, default=1.0,
                        help="Sleep time between API calls in seconds (default: 1.0)")
     
