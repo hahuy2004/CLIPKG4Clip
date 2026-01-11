@@ -67,3 +67,4 @@ HUONG_DAN_MSRVTT_MSVD.md
 
 enriched_eval/enriched_dataloader.py
 enriched_eval/USAGE_GENERATE_ENRICHED.md
+verify_msvd_enriched_structure.py

@@ -70,7 +70,7 @@ def load_msvd_data(test_list_path, raw_captions_path):
         raw_captions_path: Path to raw-captions.pkl
         
     Returns:
-        dict: {video_id: [['token1', 'token2', ...], ...]}
+        dict: {video_id: {'original_captions': [[tokens], ...], 'first_caption_text': str}}
     """
     print(f"Loading MSVD test list from: {test_list_path}")
     with open(test_list_path, 'r') as f:
@@ -84,8 +84,13 @@ def load_msvd_data(test_list_path, raw_captions_path):
     test_data = {}
     for video_id in test_videos:
         if video_id in all_captions:
-            # Take first caption as the main one
-            test_data[video_id] = all_captions[video_id]
+            original_captions = all_captions[video_id]  # Keep all original captions
+            # Extract first caption text for enrichment
+            first_caption_text = ' '.join(original_captions[0])
+            test_data[video_id] = {
+                'original_captions': original_captions,
+                'first_caption_text': first_caption_text
+            }
     
     print(f"Loaded {len(test_data)} MSVD test videos")
     return test_data
@@ -140,29 +145,92 @@ def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path):
     print(f"Saved {len(rows)} rows to {output_csv_path}")
 
 
-def save_msvd_enriched_pkl(enriched_data, output_pkl_path):
+def save_msvd_enriched_pkl(enriched_data, original_captions_dict, output_pkl_path):
     """
     Save enriched MSVD data to pickle file.
     Format: {video_id: [['token1', 'token2', ...], ...]}
     
-    Each video has 11 captions (1 original + 10 enriched)
+    Structure: For each original caption, group as [original, enriched1, ..., enriched10]
+    Example:
+        [
+            ['original', 'caption', '1'],      # Index 0: Original 1
+            ['enriched', '1', 'variation', '1'], # Index 1-10: Enriched for caption 1
+            ...
+            ['enriched', '1', 'variation', '10'],
+            ['original', 'caption', '2'],      # Index 11: Original 2
+            ['enriched', '2', 'variation', '1'], # Index 12-21: Enriched for caption 2
+            ...
+        ]
+    
+    Note: Currently only enriches the FIRST caption due to API cost.
+    For other captions, repeats the original as enriched variations.
     """
     print(f"Saving enriched MSVD pickle to: {output_pkl_path}")
     
     output_data = {}
-    for video_id, enriched_captions in enriched_data.items():
-        # Convert each caption string to list of tokens
-        tokenized_captions = []
-        for caption in enriched_captions:
-            tokens = caption.lower().split()
-            tokenized_captions.append(tokens)
-        
-        output_data[video_id] = tokenized_captions
+    metadata = {}  # Track structure for debugging
     
+    for video_id, enriched_captions in enriched_data.items():
+        all_captions_tokenized = []
+        video_metadata = []
+        
+        if video_id in original_captions_dict:
+            original_caps = original_captions_dict[video_id]  # List of tokenized captions
+            num_originals = len(original_caps)
+            
+            for idx, original_cap_tokens in enumerate(original_caps):
+                # Add original caption
+                all_captions_tokenized.append(original_cap_tokens)
+                
+                # Track metadata
+                group_start = len(all_captions_tokenized) - 1
+                
+                if idx == 0:
+                    # First caption: use generated enriched variations
+                    # enriched_captions[0] = original (skip)
+                    # enriched_captions[1:11] = 10 enriched variations
+                    for enriched_text in enriched_captions[1:11]:  # Get 10 enriched
+                        tokens = enriched_text.lower().split()
+                        all_captions_tokenized.append(tokens)
+                else:
+                    # Other captions: repeat original 10 times (placeholder)
+                    # TODO: Generate enriched for ALL captions if needed
+                    for _ in range(10):
+                        all_captions_tokenized.append(original_cap_tokens)
+                
+                group_end = len(all_captions_tokenized)
+                video_metadata.append({
+                    'original_index': idx,
+                    'group_range': (group_start, group_end),
+                    'original_text': ' '.join(original_cap_tokens),
+                    'enriched_count': 10
+                })
+        else:
+            # Fallback if video not found
+            print(f"Warning: {video_id} not in original_captions_dict")
+            continue
+        
+        output_data[video_id] = all_captions_tokenized
+        metadata[video_id] = {
+            'num_original_captions': num_originals,
+            'total_captions': len(all_captions_tokenized),
+            'groups': video_metadata
+        }
+    
+    # Save main pickle file
     with open(output_pkl_path, 'wb') as f:
         pickle.dump(output_data, f)
     
-    print(f"Saved {len(output_data)} videos to {output_pkl_path}")
+    total_captions = sum(len(caps) for caps in output_data.values())
+    print(f"Saved {len(output_data)} videos with {total_captions} total captions to {output_pkl_path}")
+    
+    # Save metadata file for debugging
+    metadata_path = output_pkl_path.replace('.pkl', '_metadata.json')
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2, ensure_ascii=False)
+    print(f"Saved metadata to {metadata_path}")
+    
+    return metadata
 
 
 def save_reference_json(enriched_data, output_json_path):
@@ -240,14 +308,22 @@ Examples:
         if args.output_csv is None:
             parser.error("--output_csv is required for MSRVTT")
         if args.output_reference is None:
-            args.output_reference = args.output_csv.replace('.csv', '_reference.json')
+            # Default: MSRVTT_eval_enriched_reference_data.json
+            args.output_reference = os.path.join(
+                os.path.dirname(args.output_csv),
+                'MSRVTT_eval_enriched_reference_data.json'
+            )
     elif args.datatype == "msvd":
         if args.raw_captions is None:
             parser.error("--raw_captions is required for MSVD")
         if args.output_pkl is None:
             parser.error("--output_pkl is required for MSVD")
         if args.output_reference is None:
-            args.output_reference = args.output_pkl.replace('.pkl', '_reference.json')
+            # Default: enriched_eval_captions.json
+            args.output_reference = os.path.join(
+                os.path.dirname(args.output_pkl),
+                'enriched_eval_captions.json'
+            )
     
     print("="*70)
     print("ENRICHED QUERY GENERATION")
@@ -277,13 +353,12 @@ Examples:
         print("\n[MSVD] Loading data...")
         test_data = load_msvd_data(args.data_path, args.raw_captions)
         
-        # Extract first caption for each video
+        # Extract first caption for each video (for enrichment)
         input_captions = {}
-        for video_id, captions_list in test_data.items():
-            if captions_list and len(captions_list) > 0:
-                # Join tokens to form caption
-                first_caption = ' '.join(captions_list[0])
-                input_captions[video_id] = first_caption
+        original_captions_dict = {}  # Store all original captions
+        for video_id, video_data in test_data.items():
+            input_captions[video_id] = video_data['first_caption_text']
+            original_captions_dict[video_id] = video_data['original_captions']
         
         print(f"Extracted {len(input_captions)} videos")
     
@@ -343,7 +418,7 @@ Examples:
         print(f"  📄 Reference JSON: {args.output_reference}")
         
     elif args.datatype == "msvd":
-        save_msvd_enriched_pkl(enriched_data, args.output_pkl)
+        save_msvd_enriched_pkl(enriched_data, original_captions_dict, args.output_pkl)
         save_reference_json(enriched_data, args.output_reference)
         
         print(f"\n✅ MSVD outputs saved:")

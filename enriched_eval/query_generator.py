@@ -9,35 +9,53 @@ import time
 from tqdm import tqdm
 from openai import OpenAI
 
-PROMPT_TEMPLATE = """You are given a caption describing a visual scene. Your task is to rewrite the caption into {n} different sentences following the rules:
-1. You can diversify the sentence structure and word usage, but you should strictly keep the same semantic meaning.
-2. Do not add uncertain details that do not associate with the visual scene. The rewriting should strictly follow the factual information in the original caption.
-3. The rewritten captions should be diverse in number of words.
-4. The rewritten captions should be no more than 10 words longer than the original caption.
+# PROMPT_TEMPLATE = """You are given a caption describing a visual scene. Your task is to rewrite the caption into {n} different sentences following the rules:
+# 1. You can diversify the sentence structure and word usage, but you should strictly keep the same semantic meaning.
+# 2. Do not add uncertain details that do not associate with the visual scene. The rewriting should strictly follow the factual information in the original caption.
+# 3. The rewritten captions should be diverse in number of words.
+# 4. The rewritten captions should be no more than 10 words longer than the original caption.
 
-The input caption is: {caption}
+# The input caption is: {caption}
 
-Please output ONLY the {n} rewritten sentences, one per line, without numbering or any additional text."""
+# Please output ONLY the {n} rewritten sentences, one per line, without numbering or any additional text."""
 
+PROMPT_TEMPLATE = """You are given a caption describing a visual scene.
+
+Your task is to generate EXACTLY {n} rewritten versions of the caption, following the constraints below:
+
+1. Each rewritten sentence must preserve the exact semantic meaning of the original caption.
+2. Do NOT introduce any new objects, actions, attributes, intentions, or contextual details that are not explicitly stated in the original caption.
+3. The rewriting must be strictly grounded in the visual content described by the original caption.
+4. Sentence structure and lexical choices should be diversified across rewritten sentences.
+5. The rewritten captions should vary in length and number of words.
+6. Each rewritten caption must be no more than 10 words longer than the original caption.
+7. The original caption must NOT appear in the rewritten outputs.
+8. No two rewritten captions may be identical.
+
+The input caption is:
+"{caption}"
+
+Output ONLY the {n} rewritten sentences, one per line, without numbering, bullet points, or any additional explanations.
+"""
 
 def generate_enriched_queries(
     input_captions,
     output_json_path,
     api_key,
     n_variations=10,
-    model="gpt-4",
+    model="gpt-4.1-mini",
     batch_size=1,
     sleep_time=1.0
 ):
     """
-    Generate enriched query variations using GPT-4.
+    Generate enriched query variations using GPT-4.1-mini.
     
     Args:
         input_captions: List of original captions or dict with video_id -> caption
         output_json_path: Path to save enriched data
         api_key: OpenAI API key
         n_variations: Number of variations to generate (default: 10)
-        model: OpenAI model to use (default: gpt-4)
+        model: OpenAI model to use (default: gpt-4.1-mini)
         batch_size: Process captions in batches (default: 1)
         sleep_time: Sleep between API calls to avoid rate limits
         
@@ -69,24 +87,45 @@ def generate_enriched_queries(
         try:
             prompt = PROMPT_TEMPLATE.format(n=n_variations, caption=original_caption)
             
-            response = client.chat.completions.create(
+            response = client.responses.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that rewrites captions while preserving semantic meaning."},
-                    {"role": "user", "content": prompt}
-                ],
+                input=prompt,
                 temperature=0.7,
-                max_tokens=500
+                top_p=0.9,
+                max_output_tokens=300
             )
             
             # Parse response
-            variations_text = response.choices[0].message.content.strip()
-            variations = [line.strip() for line in variations_text.split('\n') if line.strip()]
+            variations_text = response.output_text.strip()
+            
+            # Parse and clean variations
+            # Split by newline and strip each line
+            raw_variations = [
+                line.strip() 
+                for line in variations_text.split('\n') 
+                if line.strip()  # Remove empty lines
+            ]
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            variations = []
+            for var in raw_variations:
+                # Normalize for comparison (lowercase, remove extra spaces)
+                normalized = ' '.join(var.lower().split())
+                original_normalized = ' '.join(original_caption.lower().split())
+                
+                # Skip if duplicate or matches original caption
+                if normalized not in seen and normalized != original_normalized:
+                    variations.append(var)
+                    seen.add(normalized)
             
             # Ensure we have exactly n variations
             if len(variations) < n_variations:
-                print(f"Warning: Only got {len(variations)} variations for {video_id}, padding with original")
-                variations += [original_caption] * (n_variations - len(variations))
+                shortage = n_variations - len(variations)
+                print(f"Warning: Only got {len(variations)} unique variations for {video_id}, padding {shortage} with modified original")
+                # Pad with slightly modified original to reach n_variations
+                for i in range(shortage):
+                    variations.append(original_caption)
             elif len(variations) > n_variations:
                 variations = variations[:n_variations]
             
@@ -111,8 +150,16 @@ def generate_enriched_queries(
     with open(output_json_path, 'w', encoding='utf-8') as f:
         json.dump(enriched_data, f, indent=2, ensure_ascii=False)
     
+    # Statistics
+    total_captions = sum(len(caps) for caps in enriched_data.values())
+    avg_per_video = total_captions / len(enriched_data) if enriched_data else 0
+    
+    print(f"\n✅ Enrichment completed!")
     print(f"Enriched data saved to {output_json_path}")
-    print(f"Total entries: {len(enriched_data)}")
+    print(f"Total videos: {len(enriched_data)}")
+    print(f"Total captions (including originals): {total_captions}")
+    print(f"Average captions per video: {avg_per_video:.1f}")
+    print(f"Expected: {n_variations + 1} (1 original + {n_variations} enriched)")
     
     return enriched_data
 
@@ -143,7 +190,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_json", type=str, required=True, help="Output enriched queries JSON file")
     parser.add_argument("--api_key", type=str, required=True, help="OpenAI API key")
     parser.add_argument("--n_variations", type=int, default=10, help="Number of variations per caption")
-    parser.add_argument("--model", type=str, default="gpt-4", help="OpenAI model to use")
+    parser.add_argument("--model", type=str, default="gpt-4.1-mini", help="OpenAI model to use")
     
     args = parser.parse_args()
     
