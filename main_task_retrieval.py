@@ -18,6 +18,10 @@ from modules.optimization import BertAdam
 from util import parallel_apply, get_logger
 from dataloaders.data_dataloaders import DATALOADER_DICT
 
+# Import enriched evaluation modules
+from enriched_eval.fqs_selector import farthest_query_selection
+from enriched_eval.voting_aggregator import majority_voting_aggregation
+
 torch.distributed.init_process_group(backend="nccl")
 
 global logger
@@ -110,6 +114,18 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
                         help="choice a similarity header.")
 
     parser.add_argument("--pretrained_clip_name", default="ViT-B/32", type=str, help="Choose a CLIP version")
+
+    # Enriched evaluation parameters
+    parser.add_argument('--eval_mode', type=int, default=1, choices=[1, 2],
+                        help='Evaluation mode: 1=normal, 2=enriched with FQS and voting')
+    parser.add_argument('--enriched_queries_path', type=str, default=None,
+                        help='Path to enriched queries JSON file (for eval_mode=2)')
+    parser.add_argument('--fqs_k', type=int, default=2,
+                        help='Number of enriched queries to select with FQS (default: 2)')
+    parser.add_argument('--voting_top_k', type=int, default=100,
+                        help='Top-K candidates for voting aggregation (default: 100)')
+    parser.add_argument('--voting_method', type=str, default='rrf', choices=['rrf', 'borda'],
+                        help='Voting aggregation method: rrf or borda (default: rrf)')
 
     args = parser.parse_args()
 
@@ -479,6 +495,192 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
     R1 = tv_metrics['R1']
     return R1
 
+def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
+    """
+    Enriched evaluation with FQS and majority voting.
+    Supports 11-text evaluation: 1 original + 10 enriched variations.
+    """
+    global logger
+    
+    if hasattr(model, 'module'):
+        model = model.module.to(device)
+    else:
+        model = model.to(device)
+    
+    # Load enriched queries
+    if args.enriched_queries_path is None or not os.path.exists(args.enriched_queries_path):
+        logger.error(f"Enriched queries file not found: {args.enriched_queries_path}")
+        logger.info("Falling back to normal evaluation...")
+        return eval_epoch(args, model, test_dataloader, device, n_gpu)
+    
+    import json
+    with open(args.enriched_queries_path, 'r', encoding='utf-8') as f:
+        enriched_queries = json.load(f)
+    
+    logger.info("="*60)
+    logger.info("ENRICHED EVALUATION MODE")
+    logger.info(f"Loaded enriched queries from: {args.enriched_queries_path}")
+    logger.info(f"FQS k={args.fqs_k} (selecting {args.fqs_k + 1} queries total)")
+    logger.info(f"Voting method: {args.voting_method}, Top-K: {args.voting_top_k}")
+    logger.info("="*60)
+    
+    model.eval()
+    with torch.no_grad():
+        # Collect all text and video features
+        all_text_embeddings = []  # List of (n_videos, n_variations=11, embed_dim)
+        all_video_embeddings = []  # (n_videos, embed_dim)
+        video_ids = []
+        
+        logger.info("Step 1/4: Extracting features for enriched queries...")
+        
+        for bid, batch in enumerate(test_dataloader):
+            batch = tuple(t.to(device) for t in batch)
+            input_ids, input_mask, segment_ids, video, video_mask = batch
+            
+            batch_size = video.shape[0]
+            
+            # Get video embeddings
+            visual_output = model.get_visual_output(video, video_mask)
+            all_video_embeddings.append(visual_output.cpu())
+            
+            # Process each sample in batch
+            for i in range(batch_size):
+                # Get video ID (try different approaches)
+                if hasattr(test_dataloader.dataset, 'data'):
+                    try:
+                        video_id = test_dataloader.dataset.data.iloc[bid * batch_size + i]['video_id']
+                    except:
+                        video_id = f"video_{bid * batch_size + i}"
+                else:
+                    video_id = f"video_{bid * batch_size + i}"
+                
+                video_ids.append(video_id)
+                
+                # Get enriched texts for this video
+                if video_id in enriched_queries:
+                    texts = enriched_queries[video_id]  # List of 11 texts
+                else:
+                    # Fallback: decode original text
+                    logger.warning(f"No enriched data for {video_id}, using original only")
+                    original_text = "a video"  # Placeholder
+                    texts = [original_text] * 11
+                
+                # Tokenize all 11 variations
+                text_embeddings = []
+                for text in texts:
+                    words = model.tokenizer.tokenize(text)
+                    words = words[:args.max_words]
+                    tokens = model.tokenizer.convert_tokens_to_ids(words)
+                    
+                    # Pad
+                    while len(tokens) < args.max_words:
+                        tokens.append(0)
+                    
+                    text_ids = torch.tensor([tokens]).to(device)
+                    text_mask = (text_ids > 0).long()
+                    segment = torch.zeros_like(text_ids)
+                    
+                    # Get text embedding
+                    text_emb = model.get_sequence_output(text_ids, segment, text_mask)
+                    text_embeddings.append(text_emb.cpu())
+                
+                # Stack: (11, embed_dim)
+                text_embeddings = torch.cat(text_embeddings, dim=0)
+                all_text_embeddings.append(text_embeddings)
+            
+            if (bid + 1) % 10 == 0:
+                logger.info(f"  Processed {bid + 1}/{len(test_dataloader)} batches")
+        
+        # Convert to tensors
+        all_video_embeddings = torch.cat(all_video_embeddings, dim=0)  # (n_videos, embed_dim)
+        # all_text_embeddings: list of (11, embed_dim), length = n_videos
+        
+        n_videos = len(all_text_embeddings)
+        logger.info(f"Extracted features for {n_videos} videos")
+        
+        # Step 2: Apply FQS to select k+1 queries per video
+        logger.info(f"Step 2/4: Applying FQS to select {args.fqs_k + 1} queries per video...")
+        
+        selected_indices_all = []
+        for i, text_embs in enumerate(all_text_embeddings):
+            # text_embs: (11, embed_dim)
+            selected_indices = farthest_query_selection(text_embs, k=args.fqs_k, return_indices=True)
+            selected_indices_all.append(selected_indices)
+            
+            if i < 3:  # Log first few
+                logger.info(f"  Video {i}: Selected query indices {selected_indices}")
+        
+        # Step 3: Compute similarity matrices for selected queries
+        logger.info("Step 3/4: Computing similarity matrices...")
+        
+        # We need to compute sim matrix for each video's selected queries
+        # For efficiency, we'll compute all-to-all then filter
+        
+        # Compute raw similarity: for each video, use selected queries
+        all_sim_matrices = []  # List of (n_selected_queries, n_videos)
+        
+        for vid_idx, (text_embs, selected_indices) in enumerate(zip(all_text_embeddings, selected_indices_all)):
+            # Get selected text embeddings
+            selected_text_embs = text_embs[selected_indices]  # (k+1, embed_dim)
+            
+            # Compute similarity with all videos
+            # selected_text_embs: (k+1, embed_dim)
+            # all_video_embeddings: (n_videos, embed_dim)
+            
+            # Normalize
+            selected_text_norm = selected_text_embs / (selected_text_embs.norm(dim=-1, keepdim=True) + 1e-8)
+            video_norm = all_video_embeddings / (all_video_embeddings.norm(dim=-1, keepdim=True) + 1e-8)
+            
+            # Compute cosine similarity: (k+1, n_videos)
+            sim_matrix = torch.matmul(selected_text_norm, video_norm.t())
+            all_sim_matrices.append(sim_matrix.numpy())
+            
+            if (vid_idx + 1) % 100 == 0:
+                logger.info(f"  Computed similarity for {vid_idx + 1}/{n_videos} videos")
+        
+        # Step 4: Apply majority voting aggregation
+        logger.info("Step 4/4: Applying majority voting aggregation...")
+        
+        aggregated_sim_matrices = []
+        for vid_idx, sim_matrix in enumerate(all_sim_matrices):
+            # sim_matrix: (k+1, n_videos)
+            # We treat each query as producing one ranking
+            
+            # Expand to shape needed by voting function: (k+1, 1, n_videos)
+            sim_expanded = sim_matrix[:, np.newaxis, :]
+            
+            # Apply voting
+            aggregated = majority_voting_aggregation(
+                [sim_expanded[i] for i in range(sim_matrix.shape[0])],
+                top_k=args.voting_top_k,
+                method=args.voting_method
+            )
+            
+            # aggregated: (1, n_videos), we want just (n_videos,)
+            aggregated_sim_matrices.append(aggregated[0])
+        
+        # Stack to final similarity matrix: (n_videos, n_videos)
+        final_sim_matrix = np.stack(aggregated_sim_matrices, axis=0)
+        
+        logger.info(f"Final similarity matrix shape: {final_sim_matrix.shape}")
+        
+        # Compute metrics
+        logger.info("Computing retrieval metrics...")
+        tv_metrics = compute_metrics(final_sim_matrix)
+        vt_metrics = compute_metrics(final_sim_matrix.T)
+        
+        logger.info('\tLength-T: {}, Length-V: {}'.format(len(final_sim_matrix), len(final_sim_matrix[0])))
+        
+        logger.info("Text-to-Video (Enriched):")
+        logger.info('\t>>>  R@1: {:.1f} - R@5: {:.1f} - R@10: {:.1f} - Median R: {:.1f} - Mean R: {:.1f}'.
+                    format(tv_metrics['R1'], tv_metrics['R5'], tv_metrics['R10'], tv_metrics['MR'], tv_metrics['MeanR']))
+        logger.info("Video-to-Text (Enriched):")
+        logger.info('\t>>>  V2T$R@1: {:.1f} - V2T$R@5: {:.1f} - V2T$R@10: {:.1f} - V2T$Median R: {:.1f} - V2T$Mean R: {:.1f}'.
+                    format(vt_metrics['R1'], vt_metrics['R5'], vt_metrics['R10'], vt_metrics['MR'], vt_metrics['MeanR']))
+        
+        R1 = tv_metrics['R1']
+        return R1
+
 def main():
     global logger
     args = get_args()
@@ -700,7 +902,15 @@ def main():
 
     elif args.do_eval:
         if args.local_rank == 0:
-            eval_epoch(args, model, test_dataloader, device, n_gpu)
+            # Choose evaluation mode
+            if args.eval_mode == 1:
+                logger.info("Running NORMAL evaluation (eval_mode=1)")
+                eval_epoch(args, model, test_dataloader, device, n_gpu)
+            elif args.eval_mode == 2:
+                logger.info("Running ENRICHED evaluation (eval_mode=2)")
+                eval_epoch_enriched(args, model, test_dataloader, device, n_gpu)
+            else:
+                raise ValueError(f"Unknown eval_mode: {args.eval_mode}")
 
 if __name__ == "__main__":
     main()
