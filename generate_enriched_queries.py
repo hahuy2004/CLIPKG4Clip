@@ -116,8 +116,9 @@ def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path):
         video_id = original_data[key]['video_id']
         
         # Get enriched captions (11 total: 1 original + 10 variations)
-        if video_id in enriched_data:
-            captions = enriched_data[video_id]
+        # Use key instead of video_id for lookup
+        if key in enriched_data:
+            captions = enriched_data[key]
         else:
             # Fallback if enrichment failed
             captions = [original_data[key]['sentence']] * 11
@@ -339,15 +340,14 @@ Examples:
         original_data = load_msrvtt_csv(args.data_path)
         
         # Extract captions for enrichment
+        # Each key (ret0, ret1, ...) needs to be enriched separately
         input_captions = {}
         for key, data in original_data.items():
-            video_id = data['video_id']
             sentence = data['sentence']
-            # Use video_id as key for enrichment
-            if video_id not in input_captions:
-                input_captions[video_id] = sentence
+            # Use key (ret0, ret1, ...) for enrichment
+            input_captions[key] = sentence
         
-        print(f"Extracted {len(input_captions)} unique videos")
+        print(f"Extracted {len(input_captions)} captions to enrich")
         
     elif args.datatype == "msvd":
         print("\n[MSVD] Loading data...")
