@@ -40,21 +40,21 @@ DEFAULT_API_KEY = "YOUR_OPENAI_API_KEY"
 def load_msrvtt_csv(csv_path):
     """
     Load MSRVTT test data from CSV file.
-    Expected format: query_id, video_id, video_name, caption
+    Expected format: key, vid_key, video_id, sentence
     
     Returns:
-        dict: {query_id: {'video_id': ..., 'video_name': ..., 'caption': ...}}
+        dict: {key: {'vid_key': ..., 'video_id': ..., 'sentence': ...}}
     """
     print(f"Loading MSRVTT CSV from: {csv_path}")
     df = pd.read_csv(csv_path)
     
     data = {}
     for _, row in df.iterrows():
-        query_id = row['query_id']
-        data[query_id] = {
+        key = row['key']
+        data[key] = {
+            'vid_key': row['vid_key'],
             'video_id': row['video_id'],
-            'video_name': row['video_name'],
-            'caption': row['caption']
+            'sentence': row['sentence']
         }
     
     print(f"Loaded {len(data)} MSRVTT queries")
@@ -99,7 +99,7 @@ def load_msvd_data(test_list_path, raw_captions_path):
 def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path):
     """
     Save enriched MSRVTT data to CSV.
-    Format: query_id, video_id, video_name, caption
+    Format: key, vid_key, video_id, sentence
     
     For each original query ret{i}:
     - ret{i}: original caption
@@ -111,33 +111,33 @@ def save_msrvtt_enriched_csv(enriched_data, original_data, output_csv_path):
     print(f"Saving enriched MSRVTT CSV to: {output_csv_path}")
     
     rows = []
-    for query_id in sorted(original_data.keys()):
-        video_id = original_data[query_id]['video_id']
-        video_name = original_data[query_id]['video_name']
+    for key in sorted(original_data.keys()):
+        vid_key = original_data[key]['vid_key']
+        video_id = original_data[key]['video_id']
         
         # Get enriched captions (11 total: 1 original + 10 variations)
         if video_id in enriched_data:
             captions = enriched_data[video_id]
         else:
             # Fallback if enrichment failed
-            captions = [original_data[query_id]['caption']] * 11
+            captions = [original_data[key]['sentence']] * 11
         
         # Original query
         rows.append({
-            'query_id': query_id,
+            'key': key,
+            'vid_key': vid_key,
             'video_id': video_id,
-            'video_name': video_name,
-            'caption': captions[0]
+            'sentence': captions[0]
         })
         
         # Enriched queries
         for j in range(1, 11):
-            enriched_query_id = f"{query_id}_{j}"
+            enriched_key = f"{key}_{j}"
             rows.append({
-                'query_id': enriched_query_id,
+                'key': enriched_key,
+                'vid_key': vid_key,
                 'video_id': video_id,
-                'video_name': video_name,
-                'caption': captions[j] if j < len(captions) else captions[0]
+                'sentence': captions[j] if j < len(captions) else captions[0]
             })
     
     df = pd.DataFrame(rows)
@@ -340,12 +340,12 @@ Examples:
         
         # Extract captions for enrichment
         input_captions = {}
-        for query_id, data in original_data.items():
+        for key, data in original_data.items():
             video_id = data['video_id']
-            caption = data['caption']
+            sentence = data['sentence']
             # Use video_id as key for enrichment
             if video_id not in input_captions:
-                input_captions[video_id] = caption
+                input_captions[video_id] = sentence
         
         print(f"Extracted {len(input_captions)} unique videos")
         
