@@ -292,7 +292,7 @@ Examples:
     parser.add_argument("--n_variations", type=int, default=10,
                        help="Number of variations per caption (default: 10)")
     parser.add_argument("--model", type=str, default="gpt-5-mini",
-                       choices=["gpt-5-mini", "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
+                       choices=["gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
                        help="OpenAI model to use (default: gpt-5-mini)")
     parser.add_argument("--sleep_time", type=float, default=1.0,
                        help="Sleep time between API calls in seconds (default: 1.0)")
