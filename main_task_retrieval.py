@@ -115,11 +115,9 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
 
     parser.add_argument("--pretrained_clip_name", default="ViT-B/32", type=str, help="Choose a CLIP version")
 
-    # FQS evaluation parameters
-    parser.add_argument('--fqs_csv_path', type=str, default=None,
-                        help='Path to FQS CSV file (e.g., MSRVTT_JSFUSION_test_fqs.csv)')
+    # Enriched evaluation parameters
     parser.add_argument('--eval_enriched', type=int, default=0, choices=[0, 1],
-                        help='Use enriched queries: 0=no (only original), 1=yes (use FQS queries)')
+                        help='Use enriched queries: 0=no (baseline with val_csv), 1=yes (FQS with val_csv containing k+1 queries)')
     parser.add_argument('--aggregation_strategy', type=int, default=1, choices=[1, 2],
                         help='Aggregation strategy: 1=Majority Voting, 2=Average Similarity (only when eval_enriched=1)')
     parser.add_argument('--fqs_k', type=int, default=2,
@@ -148,12 +146,6 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
                 "ERROR: --aggregation_strategy can only be used when --eval_enriched=1. "
                 "You must enable enriched evaluation to use aggregation strategies."
             )
-    
-    if args.eval_enriched == 1 and args.fqs_csv_path is None:
-        raise ValueError(
-            "ERROR: --fqs_csv_path is required when --eval_enriched=1. "
-            "Please provide the path to FQS CSV file."
-        )
 
     return args
 
@@ -527,18 +519,18 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
     else:
         model = model.to(device)
     
-    # Validate FQS CSV file
-    if args.fqs_csv_path is None or not os.path.exists(args.fqs_csv_path):
-        logger.error(f"FQS CSV file not found: {args.fqs_csv_path}")
+    # Validate CSV file
+    if args.val_csv is None or not os.path.exists(args.val_csv):
+        logger.error(f"CSV file not found: {args.val_csv}")
         logger.info("Falling back to normal evaluation...")
         return eval_epoch(args, model, test_dataloader, device, n_gpu)
     
-    # Load FQS CSV
+    # Load FQS CSV from val_csv
     import pandas as pd
-    fqs_df = pd.read_csv(args.fqs_csv_path)
+    fqs_df = pd.read_csv(args.val_csv)
     logger.info("="*70)
     logger.info("ENRICHED EVALUATION WITH FQS QUERIES")
-    logger.info(f"FQS CSV: {args.fqs_csv_path}")
+    logger.info(f"FQS CSV: {args.val_csv}")
     logger.info(f"Loaded {len(fqs_df)} rows from FQS CSV")
     
     # Determine aggregation strategy
@@ -748,6 +740,9 @@ def main():
     # Skip val_dataloader when doing enriched evaluation (not needed)
     if args.do_eval and args.eval_enriched == 1:
         val_dataloader, val_length = None, 0
+        # For enriched eval, ensure test_dataloader exists (fallback if needed)
+        if test_dataloader is None:
+            raise ValueError("test_dataloader is required for enriched evaluation")
     else:
         if DATALOADER_DICT[args.datatype]["val"] is not None:
             val_dataloader, val_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
@@ -762,8 +757,9 @@ def main():
         logger.info("***** Running test *****")
         logger.info("  Num examples = %d", test_length)
         logger.info("  Batch size = %d", args.batch_size_val)
-        logger.info("  Num steps = %d", len(test_dataloader))
-        if not (args.do_eval and args.eval_enriched == 1):
+        if test_dataloader is not None:
+            logger.info("  Num steps = %d", len(test_dataloader))
+        if not (args.do_eval and args.eval_enriched == 1) and val_dataloader is not None:
             logger.info("***** Running val *****")
             logger.info("  Num examples = %d", val_length)
 
