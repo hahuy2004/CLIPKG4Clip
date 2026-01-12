@@ -745,22 +745,27 @@ def main():
     if DATALOADER_DICT[args.datatype]["test"] is not None:
         test_dataloader, test_length = DATALOADER_DICT[args.datatype]["test"](args, tokenizer)
 
-    if DATALOADER_DICT[args.datatype]["val"] is not None:
-        val_dataloader, val_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
+    # Skip val_dataloader when doing enriched evaluation (not needed)
+    if args.do_eval and args.eval_enriched == 1:
+        val_dataloader, val_length = None, 0
     else:
-        val_dataloader, val_length = test_dataloader, test_length
+        if DATALOADER_DICT[args.datatype]["val"] is not None:
+            val_dataloader, val_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
+        else:
+            val_dataloader, val_length = test_dataloader, test_length
 
-    ## report validation results if the ["test"] is None
-    if test_dataloader is None:
-        test_dataloader, test_length = val_dataloader, val_length
+        ## report validation results if the ["test"] is None
+        if test_dataloader is None:
+            test_dataloader, test_length = val_dataloader, val_length
 
     if args.local_rank == 0:
         logger.info("***** Running test *****")
         logger.info("  Num examples = %d", test_length)
         logger.info("  Batch size = %d", args.batch_size_val)
         logger.info("  Num steps = %d", len(test_dataloader))
-        logger.info("***** Running val *****")
-        logger.info("  Num examples = %d", val_length)
+        if not (args.do_eval and args.eval_enriched == 1):
+            logger.info("***** Running val *****")
+            logger.info("  Num examples = %d", val_length)
 
     ## ####################################
     # train and eval
