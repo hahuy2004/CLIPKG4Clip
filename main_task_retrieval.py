@@ -737,13 +737,19 @@ def main():
     if DATALOADER_DICT[args.datatype]["test"] is not None:
         test_dataloader, test_length = DATALOADER_DICT[args.datatype]["test"](args, tokenizer)
 
-    # Skip val_dataloader when doing enriched evaluation (not needed)
+    # For enriched evaluation: only need 1 dataloader (test or val) to load videos
+    # Queries will be read from CSV file (--val_csv)
     if args.do_eval and args.eval_enriched == 1:
-        val_dataloader, val_length = None, 0
-        # For enriched eval, ensure test_dataloader exists (fallback if needed)
+        # If test_dataloader is None, load val_dataloader and use it
         if test_dataloader is None:
-            raise ValueError("test_dataloader is required for enriched evaluation")
+            if DATALOADER_DICT[args.datatype]["val"] is not None:
+                test_dataloader, test_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
+            else:
+                raise ValueError("No dataloader available for enriched evaluation")
+        # Don't need val_dataloader for enriched eval
+        val_dataloader, val_length = None, 0
     else:
+        # Normal evaluation: need both test and val dataloaders
         if DATALOADER_DICT[args.datatype]["val"] is not None:
             val_dataloader, val_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
         else:
