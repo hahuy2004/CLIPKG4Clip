@@ -1,4 +1,4 @@
-# CLIP4Clip: An Empirical Study of CLIP for End to End Video Clip Retrieval
+# CLIPKG4Clip: An Empirical Study of CLIP for End to End Video Clip Retrieval
 
 (**July 28, 2021**) Add ViT-B/16 with an extra `--pretrained_clip_name`
 
