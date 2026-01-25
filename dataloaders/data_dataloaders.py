@@ -1,31 +1,199 @@
 import torch
 from torch.utils.data import DataLoader
-from dataloaders.dataloader_msrvtt_retrieval import MSRVTT_DataLoader
-from dataloaders.dataloader_msrvtt_retrieval import MSRVTT_TrainDataLoader
+from dataloaders.dataloader_msrvtt_retrieval import MSRVTT_DataLoader, MSRVTT_TrainDataLoader
 from dataloaders.dataloader_msvd_retrieval import MSVD_DataLoader
 from dataloaders.dataloader_lsmdc_retrieval import LSMDC_DataLoader
 from dataloaders.dataloader_activitynet_retrieval import ActivityNet_DataLoader
 from dataloaders.dataloader_didemo_retrieval import DiDeMo_DataLoader
 
+# Import TempMe-style dataloader (now unified in same file)
+try:
+    from dataloaders.dataloader_msrvtt_retrieval import MSRVTTDataset_TempMe
+    TEMPME_AVAILABLE = True
+except ImportError:
+    TEMPME_AVAILABLE = False
+    print("[Warning] TempMe-style dataloaders not available. Install decord for TempMe support: pip install decord")
+
 def dataloader_msrvtt_train(args, tokenizer):
-    msrvtt_dataset = MSRVTT_TrainDataLoader(
-        csv_path=args.train_csv,
-        json_path=args.data_path,
-        features_path=args.features_path,
+    """
+    MSRVTT train dataloader with automatic mode selection.
+    
+    Args:
+        args: Configuration object with use_tempme flag
+        tokenizer: Text tokenizer
+        
+    Returns:
+        tuple: (dataloader, dataset_length, sampler)
+    """
+    # Check if using TempMe-style dataloader
+    use_tempme = hasattr(args, 'use_tempme') and args.use_tempme and TEMPME_AVAILABLE
+    
+    if use_tempme:
+        print("[dataloader_msrvtt_train] Using TempMe-style dataloader with Decord + Advanced Augmentation")
+        # TempMe-style dataloader (uses anno_path + video_path)
+        msrvtt_dataset = MSRVTTDataset_TempMe(
+            subset='train',
+            anno_path=args.anno_path,
+            video_path=args.video_path,
+            max_words=args.max_words,
+            tokenizer=tokenizer,
+            max_frames=args.max_frames,
+            video_framerate=args.video_framerate,
+            # image_resolution=getattr(args, 'image_resolution', 224),
+            config=args
+        )
+
+        try:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(msrvtt_dataset)
+        except:
+            train_sampler = None  # cpu
+            
+        dataloader = DataLoader(
+            msrvtt_dataset,
+            batch_size=args.batch_size // args.world_size,
+            num_workers=args.workers,
+            pin_memory=False,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+            drop_last=True,
+        )
+    else:
+        print("[dataloader_msrvtt_train] Using original CLIPKG4Clip dataloader with OpenCV")
+        # Original CLIPKG4Clip dataloader
+        msrvtt_dataset = MSRVTT_TrainDataLoader(
+            csv_path=args.train_csv,
+            json_path=args.data_path,
+            features_path=args.features_path,
+            max_words=args.max_words,
+            feature_framerate=args.feature_framerate,
+            tokenizer=tokenizer,
+            max_frames=args.max_frames,
+            unfold_sentences=args.expand_msrvtt_sentences,
+            frame_order=args.train_frame_order,
+            slice_framepos=args.slice_framepos,
+        )
+
+        try:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(msrvtt_dataset)
+        except:
+            train_sampler = None  # cpu
+
+        dataloader = DataLoader(
+            msrvtt_dataset,
+            batch_size=args.batch_size // args.n_gpu,
+            num_workers=args.num_thread_reader,
+            pin_memory=False,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+            drop_last=True,
+        )
+
+    return dataloader, len(msrvtt_dataset), train_sampler
+
+def dataloader_msrvtt_test(args, tokenizer, subset="test"):
+    """
+    MSRVTT test/val dataloader with automatic mode selection.
+    
+    Args:
+        args: Configuration object with use_tempme flag
+        tokenizer: Text tokenizer
+        subset: 'test' or 'val'
+        
+    Returns:
+        tuple: (dataloader, dataset_length)
+    """
+    # Check if using TempMe-style dataloader
+    use_tempme = hasattr(args, 'use_tempme') and args.use_tempme and TEMPME_AVAILABLE
+    
+    if use_tempme:
+        print(f"[dataloader_msrvtt_test] Using TempMe-style dataloader with Decord (subset={subset})")
+        # TempMe-style dataloader
+        msrvtt_testset = MSRVTTDataset_TempMe(
+            subset=subset,
+            anno_path=args.anno_path,
+            video_path=args.video_path,
+            max_words=args.max_words,
+            tokenizer=tokenizer,
+            max_frames=args.max_frames,
+            video_framerate=args.video_framerate,
+            # image_resolution=getattr(args, 'image_resolution', 224),
+            config=args
+        )
+
+        try:
+            test_sampler = torch.utils.data.distributed.DistributedSampler(msrvtt_testset)
+        except:
+            test_sampler = None  # cpu
+
+        dataloader_msrvtt = DataLoader(
+            msrvtt_testset,
+            batch_size=args.batch_size_val // args.world_size,
+            num_workers=args.workers,
+            shuffle=False,
+            sampler=test_sampler,
+            drop_last=False,
+        )
+    else:
+        print(f"[dataloader_msrvtt_test] Using original CLIPKG4Clip dataloader with OpenCV (subset={subset})")
+        # Original CLIPKG4Clip dataloader
+        msrvtt_testset = MSRVTT_DataLoader(
+            csv_path=args.val_csv,
+            features_path=args.features_path,
+            max_words=args.max_words,
+            feature_framerate=args.feature_framerate,
+            tokenizer=tokenizer,
+            max_frames=args.max_frames,
+            frame_order=args.eval_frame_order,
+            slice_framepos=args.slice_framepos,
+        )
+    
+        dataloader_msrvtt = DataLoader(
+            msrvtt_testset,
+            batch_size=args.batch_size_val,
+            num_workers=args.num_thread_reader,
+            shuffle=False,
+            drop_last=False,
+        )
+    
+    return dataloader_msrvtt, len(msrvtt_testset)
+
+def dataloader_msrvtt_train_test(args, tokenizer):
+    """
+    MSRVTT train_test dataloader (TempMe mode only).
+    
+    Args:
+        args: Configuration object
+        tokenizer: Text tokenizer
+        
+    Returns:
+        tuple: (dataloader, dataset_length, sampler)
+    """
+    if not TEMPME_AVAILABLE:
+        raise ImportError(
+            "train_test mode requires TempMe dataloader. Install decord: pip install decord"
+        )
+    
+    print("[dataloader_msrvtt_train_test] Using TempMe-style dataloader (subset=train_test)")
+    
+    msrvtt_dataset = MSRVTTDataset_TempMe(
+        subset='train_test',
+        anno_path=args.anno_path,
+        video_path=args.video_path,
         max_words=args.max_words,
-        feature_framerate=args.feature_framerate,
         tokenizer=tokenizer,
         max_frames=args.max_frames,
-        unfold_sentences=args.expand_msrvtt_sentences,
-        frame_order=args.train_frame_order,
-        slice_framepos=args.slice_framepos,
+        video_framerate=args.video_framerate,
+        # image_resolution=getattr(args, 'image_resolution', 224),
+        config=args
     )
-
-    train_sampler = torch.utils.data.distributed.DistributedSampler(msrvtt_dataset)
+    try:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(msrvtt_dataset)
+    except:
+        train_sampler = None  # cpu
     dataloader = DataLoader(
         msrvtt_dataset,
-        batch_size=args.batch_size // args.n_gpu,
-        num_workers=args.num_thread_reader,
+        batch_size=args.batch_size // args.world_size,
+        num_workers=args.workers,
         pin_memory=False,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
@@ -33,26 +201,6 @@ def dataloader_msrvtt_train(args, tokenizer):
     )
 
     return dataloader, len(msrvtt_dataset), train_sampler
-
-def dataloader_msrvtt_test(args, tokenizer, subset="test"):
-    msrvtt_testset = MSRVTT_DataLoader(
-        csv_path=args.val_csv,
-        features_path=args.features_path,
-        max_words=args.max_words,
-        feature_framerate=args.feature_framerate,
-        tokenizer=tokenizer,
-        max_frames=args.max_frames,
-        frame_order=args.eval_frame_order,
-        slice_framepos=args.slice_framepos,
-    )
-    dataloader_msrvtt = DataLoader(
-        msrvtt_testset,
-        batch_size=args.batch_size_val,
-        num_workers=args.num_thread_reader,
-        shuffle=False,
-        drop_last=False,
-    )
-    return dataloader_msrvtt, len(msrvtt_testset)
 
 
 def dataloader_msvd_train(args, tokenizer):
@@ -252,7 +400,7 @@ def dataloader_didemo_test(args, tokenizer, subset="test"):
 
 
 DATALOADER_DICT = {}
-DATALOADER_DICT["msrvtt"] = {"train":dataloader_msrvtt_train, "val":dataloader_msrvtt_test, "test":None}
+DATALOADER_DICT["msrvtt"] = {"train":dataloader_msrvtt_train, "val":dataloader_msrvtt_test, "test":None, "train_test": dataloader_msrvtt_train_test}
 DATALOADER_DICT["msvd"] = {"train":dataloader_msvd_train, "val":dataloader_msvd_test, "test":dataloader_msvd_test}
 DATALOADER_DICT["lsmdc"] = {"train":dataloader_lsmdc_train, "val":dataloader_lsmdc_test, "test":dataloader_lsmdc_test}
 DATALOADER_DICT["activity"] = {"train":dataloader_activity_train, "val":dataloader_activity_test, "test":None}

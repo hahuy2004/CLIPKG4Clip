@@ -32,12 +32,11 @@ def print_computed_metrics(metrics):
     mr = metrics['MR']
     meanr = metrics["MeanR"]
     print('R@1: {:.4f} - R@5: {:.4f} - R@10: {:.4f} - R@50: {:.4f} - Median R: {} - MeanR: {}'.format(r1, r5, r10, r50, mr, meanr))
-    # print('R@1: {:.4f} - R@5: {:.4f} - R@10: {:.4f} - R@50: {:.4f} - Median R: {}'.format(r1, r5, r10, r50, mr))
 
 # below two functions directly come from: https://github.com/Deferf/Experiments
 def tensor_text_to_video_metrics(sim_tensor, top_k=[1, 5, 10, 50]):
     if not torch.is_tensor(sim_tensor):
-      sim_tensor = torch.tensor(sim_tensor)
+        sim_tensor = torch.tensor(sim_tensor)
 
     # Permute sim_tensor so it represents a sequence of text-video similarity matrices.
     # Then obtain the double argsort to position the rank on the diagonal
@@ -56,7 +55,7 @@ def tensor_text_to_video_metrics(sim_tensor, top_k=[1, 5, 10, 50]):
     # Such as dot product localization, but that is for other time.
     # assert int(valid_ranks.shape[0]) ==  sum([len(text_dict[k]) for k in text_dict])
     if not torch.is_tensor(valid_ranks):
-      valid_ranks = torch.tensor(valid_ranks)
+        valid_ranks = torch.tensor(valid_ranks)
     results = {f"R{k}": float(torch.sum(valid_ranks < k) * 100 / len(valid_ranks)) for k in top_k}
     results["MedianR"] = float(torch.median(valid_ranks + 1))
     results["MeanR"] = float(np.mean(valid_ranks.numpy() + 1))
@@ -66,7 +65,7 @@ def tensor_text_to_video_metrics(sim_tensor, top_k=[1, 5, 10, 50]):
 
 def tensor_video_to_text_sim(sim_tensor):
     if not torch.is_tensor(sim_tensor):
-      sim_tensor = torch.tensor(sim_tensor)
+        sim_tensor = torch.tensor(sim_tensor)
     # Code to avoid nans
     sim_tensor[sim_tensor != sim_tensor] = float('-inf')
     # Forms a similarity matrix for use with rank at k

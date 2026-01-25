@@ -291,6 +291,12 @@ class VisualTransformer(nn.Module):
         if self.linear_patch == '3d':
             self.conv2 = nn.Conv3d(in_channels=3, out_channels=width, kernel_size=(3, patch_size, patch_size),
                                    stride=(1, patch_size, patch_size), padding=(1, 0, 0), bias=False)
+    
+    def apply_lora(self, dim: int):
+        """Apply LoRA to visual transformer attention layers."""
+        if dim > 0:
+            self.lora_dim = dim
+            # LoRA will be applied when transformer is rebuilt with lora_dim > 0
 
     def forward(self, x: torch.Tensor, video_frame=-1):
 
