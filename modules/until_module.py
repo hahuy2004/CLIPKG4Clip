@@ -13,7 +13,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""PyTorch BERT model."""
+"""
+PyTorch BERT model - Unified version for CLIPKG4Clip and TempMe.
+
+This module contains utility classes and loss functions for both CLIPKG4Clip 
+and TempMe implementations.
+"""
 
 import logging
 import numpy as np
@@ -24,6 +29,10 @@ import math
 from modules.until_config import PretrainedConfig
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Common Utilities (Shared between CLIPKG4Clip and TempMe)
+# ============================================================================
 
 def gelu(x):
     """Implementation of the gelu activation function.
@@ -176,10 +185,14 @@ class PreTrainedModel(nn.Module):
 
         return model
 
-##################################
-###### LOSS FUNCTION #############
-##################################
+##########################################################
+###### Loss Functions - CLIPKG4Clip Specific #############
+##########################################################
 class CrossEn(nn.Module):
+    """
+    Cross Entropy Loss for CLIPKG4Clip (original version without config).
+    For TempMe version with config parameter, use CrossEn_TempMe.
+    """
     def __init__(self,):
         super(CrossEn, self).__init__()
 
@@ -251,7 +264,11 @@ class MaxMarginRankingLoss(nn.Module):
         return max_margin.mean()
 
 class AllGather(torch.autograd.Function):
-    """An autograd function that performs allgather on a tensor."""
+    """
+    AllGather for CLIPKG4Clip (original version).
+    An autograd function that performs allgather on a tensor.
+    For TempMe version with world_size check, use AllGather_TempMe.
+    """
 
     @staticmethod
     def forward(ctx, tensor, args):
@@ -267,3 +284,308 @@ class AllGather(torch.autograd.Function):
             grad_output[ctx.batch_size * ctx.rank : ctx.batch_size * (ctx.rank + 1)],
             None,
         )
+
+
+##########################################################
+########### Loss Functions - TempMe Specific #############
+##########################################################
+
+class CrossEn_TempMe(nn.Module):
+    """
+    Cross Entropy Loss for TempMe (with optional config parameter).
+    This is the TempMe version of CrossEn.
+    """
+    def __init__(self, config=None):
+        super(CrossEn_TempMe, self).__init__()
+        self.config = config
+
+    def forward(self, sim_matrix):
+        logpt = F.log_softmax(sim_matrix, dim=-1)
+        logpt = torch.diag(logpt)
+        nce_loss = -logpt
+        sim_loss = nce_loss.mean()
+        return sim_loss
+
+
+class ArcCrossEn(nn.Module):
+    """Arc Face Cross Entropy Loss (TempMe)."""
+    def __init__(self, margin=10):
+        super(ArcCrossEn, self).__init__()
+        self.cos_m = math.cos(margin)
+        self.sin_m = math.sin(margin)
+
+    def forward(self, sim_matrix, scale):
+        cos = torch.diag(sim_matrix)
+        sin = torch.sqrt(1.0 - torch.pow(cos, 2))
+        pin = cos * self.cos_m - sin * self.sin_m
+        sim_matrix = sim_matrix - torch.diag_embed(cos) + torch.diag_embed(pin)
+        logpt = F.log_softmax(sim_matrix / scale, dim=-1)
+        logpt = torch.diag(logpt)
+        nce_loss = -logpt
+        sim_loss = nce_loss.mean()
+        return sim_loss
+
+
+class CrossEn0(nn.Module):
+    """Cross Entropy Loss variant 0 (TempMe)."""
+    def __init__(self, config=None):
+        super(CrossEn0, self).__init__()
+
+    def forward(self, sim_matrix, b):
+        logpt = F.log_softmax(sim_matrix[:b, :], dim=-1)
+        logpt = torch.diag(logpt[:, :b])
+        nce_loss = -logpt
+        sim_loss = nce_loss.mean()
+        return sim_loss
+
+
+class ema_CrossEn(nn.Module):
+    """EMA Cross Entropy Loss (TempMe)."""
+    def __init__(self, config=None):
+        super(ema_CrossEn, self).__init__()
+
+    def forward(self, sim_matrix0, sim_matrix1):
+        m, n = sim_matrix0.size()
+        diag1 = torch.diag(sim_matrix1)
+        diag1 = torch.diag_embed(diag1)
+        sim_matrix1 = sim_matrix1 - diag1
+        logpt = F.log_softmax(torch.cat([sim_matrix0, sim_matrix1], dim=-1), dim=-1)
+        logpt = torch.diag(logpt[:, :n])
+        nce_loss = -logpt
+        sim_loss = nce_loss.mean()
+        return sim_loss
+
+
+class DC_CrossEn(nn.Module):
+    """DC Cross Entropy Loss (TempMe)."""
+    def __init__(self, config=None):
+        super(DC_CrossEn, self).__init__()
+
+    def forward(self, sim_matrix0, sim_matrix1, seta=0.8):
+        diag0 = torch.diag(sim_matrix0)
+        diag1 = torch.diag(sim_matrix1)
+        sim_matrix0 = sim_matrix0 - diag0
+        sim_matrix1 = sim_matrix1 - diag1
+        m, n = sim_matrix0.size()
+
+        sim_matrix = torch.where(sim_matrix1 < seta, sim_matrix0, torch.tensor(0.0).to(sim_matrix0.device))
+        sim_matrix = sim_matrix + diag0
+
+        logpt = F.log_softmax(sim_matrix, dim=-1)
+        logpt = torch.diag(logpt)
+        nce_loss = -logpt
+        sim_loss = nce_loss.mean()
+        return sim_loss
+
+
+class ema_CrossEn1(nn.Module):
+    """EMA Cross Entropy Loss variant 1 (TempMe)."""
+    def __init__(self, config=None):
+        super(ema_CrossEn1, self).__init__()
+
+    def forward(self, sim_matrix0, sim_matrix1):
+        logpt0 = F.log_softmax(sim_matrix0, dim=-1)
+        logpt1 = F.softmax(sim_matrix1, dim=-1)
+        sim_loss = - logpt0 * logpt1
+        # diag = torch.diag(sim_loss)
+        # sim_loss = sim_loss - diag
+        sim_loss = sim_loss.mean()
+        return sim_loss
+
+
+class ema_CrossEn2(nn.Module):
+    """EMA Cross Entropy Loss variant 2 (TempMe)."""
+    def __init__(self, config=None):
+        super(ema_CrossEn2, self).__init__()
+
+    def forward(self, sim_matrix0, sim_matrix1, lambd=0.5):
+        m, n = sim_matrix1.size()
+
+        logpt0 = F.log_softmax(sim_matrix0, dim=-1)
+        logpt1 = F.softmax(sim_matrix1, dim=-1)
+        logpt1 = lambd * torch.eye(m).to(logpt1.device) + (1 - lambd) * logpt1
+
+        sim_loss = - logpt0 * logpt1
+        sim_loss = sim_loss.sum() / m
+        return sim_loss
+
+
+class KL(nn.Module):
+    """KL Divergence Loss (TempMe)."""
+    def __init__(self, config=None):
+        super(KL, self).__init__()
+
+    def forward(self, sim_matrix0, sim_matrix1):
+        logpt0 = F.log_softmax(sim_matrix0, dim=-1)
+        logpt1 = F.softmax(sim_matrix1, dim=-1)
+        kl = F.kl_div(logpt0, logpt1, reduction='mean')
+        # kl = F.kl_div(logpt0, logpt1, reduction='sum')
+        return kl
+
+
+def _batch_hard(mat_distance, mat_similarity, indice=False):
+    """Helper function for triplet loss (TempMe)."""
+    sorted_mat_distance, positive_indices = torch.sort(mat_distance + (9999999.) * (1 - mat_similarity), dim=1,
+                                                       descending=False)
+    hard_p = sorted_mat_distance[:, 0]
+    hard_p_indice = positive_indices[:, 0]
+    sorted_mat_distance, negative_indices = torch.sort(mat_distance + (-9999999.) * (mat_similarity), dim=1,
+                                                       descending=True)
+    hard_n = sorted_mat_distance[:, 0]
+    hard_n_indice = negative_indices[:, 0]
+    if (indice):
+        return hard_p, hard_n, hard_p_indice, hard_n_indice
+    return hard_p, hard_n
+
+
+class SoftTripletLoss(nn.Module):
+    """Soft Triplet Loss (TempMe)."""
+    def __init__(self, config=None):
+        super(SoftTripletLoss, self).__init__()
+
+    def forward(self, sim_matrix0, sim_matrix1):
+        N = sim_matrix0.size(0)
+        mat_sim = torch.eye(N).float().to(sim_matrix0.device)
+        dist_ap, dist_an, ap_idx, an_idx = _batch_hard(sim_matrix0, mat_sim, indice=True)
+        triple_dist = torch.stack((dist_ap, dist_an), dim=1)
+        triple_dist = F.log_softmax(triple_dist, dim=1)
+        dist_ap_ref = torch.gather(sim_matrix1, 1, ap_idx.view(N, 1).expand(N, N))[:, 0]
+        dist_an_ref = torch.gather(sim_matrix1, 1, an_idx.view(N, 1).expand(N, N))[:, 0]
+        triple_dist_ref = torch.stack((dist_ap_ref, dist_an_ref), dim=1)
+        triple_dist_ref = F.softmax(triple_dist_ref, dim=1).detach()
+        loss = (- triple_dist_ref * triple_dist).mean(0).sum()
+        return loss
+
+
+class MSE(nn.Module):
+    """Mean Squared Error Loss (TempMe)."""
+    def __init__(self, config=None):
+        super(MSE, self).__init__()
+
+    def forward(self, sim_matrix0, sim_matrix1):
+        logpt = (sim_matrix0 - sim_matrix1)
+        loss = logpt * logpt
+        return loss.mean()
+
+
+def euclidean_dist(x, y):
+    """Calculate Euclidean distance matrix (TempMe)."""
+    m, n = x.size(0), y.size(0)
+    xx = torch.pow(x, 2).sum(1, keepdim=True).expand(m, n)
+    yy = torch.pow(y, 2).sum(1, keepdim=True).expand(n, m).t()
+    dist = xx + yy
+    dist.addmm_(1, -2, x, y.t())
+    dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
+    return dist
+
+
+def uniformity_loss(x, y):
+    """Calculate uniformity loss (TempMe)."""
+    input = torch.cat((x, y), dim=0)
+    m = input.size(0)
+    dist = euclidean_dist(input, input)
+    return torch.logsumexp(torch.logsumexp(dist, dim=-1), dim=-1) - torch.log(torch.tensor(m * m - m))
+
+
+class AllGather_TempMe(torch.autograd.Function):
+    """
+    AllGather for TempMe (with world_size check).
+    An autograd function that performs allgather on a tensor.
+    """
+
+    @staticmethod
+    def forward(ctx, tensor, args):
+        if args.world_size == 1:
+            ctx.rank = args.local_rank
+            ctx.batch_size = tensor.shape[0]
+            return tensor
+        else:
+            output = [torch.empty_like(tensor) for _ in range(args.world_size)]
+            torch.distributed.all_gather(output, tensor)
+            ctx.rank = args.local_rank
+            ctx.batch_size = tensor.shape[0]
+            return torch.cat(output, dim=0)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return (
+            grad_output[ctx.batch_size * ctx.rank: ctx.batch_size * (ctx.rank + 1)],
+            None,
+        )
+
+
+class AllGather2(torch.autograd.Function):
+    """
+    AllGather2 for TempMe (with gradient all_reduce).
+    Reference: https://github.com/PyTorchLightning/lightning-bolts
+    """
+
+    @staticmethod
+    def forward(ctx, tensor, args):
+        if args.world_size == 1:
+            ctx.rank = args.local_rank
+            ctx.batch_size = tensor.shape[0]
+            return tensor
+        else:
+            output = [torch.empty_like(tensor) for _ in range(args.world_size)]
+            torch.distributed.all_gather(output, tensor)
+            ctx.rank = args.local_rank
+            ctx.batch_size = tensor.shape[0]
+            return torch.cat(output, dim=0)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_input = grad_output.clone()
+        torch.distributed.all_reduce(grad_input, op=torch.distributed.ReduceOp.SUM, async_op=False)
+        return (grad_input[ctx.rank * ctx.batch_size:(ctx.rank + 1) * ctx.batch_size], None)
+
+
+# ============================================================================
+# Compatibility Aliases and Factory Functions
+# ============================================================================
+
+def get_cross_entropy_loss(use_tempme=False, **kwargs):
+    """
+    Factory function to get appropriate CrossEn loss.
+    
+    Args:
+        use_tempme (bool): If True, return TempMe version with config support
+        **kwargs: Arguments passed to loss constructor
+        
+    Returns:
+        CrossEn or CrossEn_TempMe instance
+        
+    Example:
+        # CLIPKG4Clip mode
+        loss = get_cross_entropy_loss(use_tempme=False)
+        
+        # TempMe mode
+        loss = get_cross_entropy_loss(use_tempme=True, config=config)
+    """
+    if use_tempme:
+        return CrossEn_TempMe(**kwargs)
+    else:
+        return CrossEn(**kwargs)
+
+
+def get_all_gather(use_tempme=False):
+    """
+    Factory function to get appropriate AllGather.
+    
+    Args:
+        use_tempme (bool): If True, return TempMe version with world_size check
+        
+    Returns:
+        AllGather or AllGather_TempMe class
+        
+    Example:
+        # CLIPKG4Clip mode
+        allgather = get_all_gather(use_tempme=False).apply
+        
+        # TempMe mode  
+        allgather = get_all_gather(use_tempme=True).apply
+    """
+    if use_tempme:
+        return AllGather_TempMe
+    else:
+        return AllGather

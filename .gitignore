@@ -68,3 +68,17 @@ HUONG_DAN_MSRVTT_MSVD.md
 enriched_eval/enriched_dataloader.py
 enriched_eval/USAGE_GENERATE_ENRICHED.md
 verify_msvd_enriched_structure.py
+
+file_temp
+/dataloaders/config_examples_tempme.py
+/dataloaders/README_TEMPME_INTEGRATION.md
+DATALOADERS_COMPARISON_ANALYSIS.md
+
+/dataloaders/temp
+/modules/temp
+test_args_mapping.py
+training_command.ipynb
+QUICK_START.sh
+MERGE_COMPLETE_REPORT.md
+
+main.py

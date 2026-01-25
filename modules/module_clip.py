@@ -1,18 +1,39 @@
 """
+CLIP Model - Unified version for CLIPKG4Clip and TempMe.
+
 Adapted from: https://github.com/openai/CLIP/blob/main/clip/clip.py
+
+This module contains CLIP (Contrastive Language-Image Pre-training) implementations:
+- CLIPKG4Clip (original): Standard CLIP with video support
+- TempMe: Enhanced version with LoRA, frame positional embeddings, and token merging
 """
 from collections import OrderedDict
-from typing import Tuple, Union
+from typing import Tuple, Union, List
 
 import hashlib
 import os
 import urllib
 import warnings
+import math
+import logging
 from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn.init import constant_, xavier_uniform_
+
+# TempMe: Import custom transformer module
+try:
+    from .module_transformer import Transformer as TransformerClip
+    from .module_transformer import Attention as TAttention
+    TEMPME_AVAILABLE = True
+except ImportError:
+    TEMPME_AVAILABLE = False
+    TransformerClip = None
+    TAttention = None
+
+logger = logging.getLogger(__name__)
 
 
 _MODELS = {
@@ -30,6 +51,7 @@ _PT_NAME = {
     "RN50x16": "RN50x16.pt",
     "ViT-B/32": "ViT-B-32.pt",
     "ViT-B/16": "ViT-B-16.pt",
+    "ViT-L/14": "ViT-L-14.pt",  # TempMe
 }
 
 def _download(url: str, root: str = os.path.expanduser("~/.cache/clip")):
@@ -67,13 +89,17 @@ def available_models():
     """Returns the names of available CLIP models"""
     return list(_MODELS.keys())
 
-# =============================
+# ============================================================================
+# Shared Components (CLIPKG4Clip & TempMe)
+# ============================================================================
 
 class Bottleneck(nn.Module):
+    """ResNet Bottleneck block used in ModifiedResNet."""
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1):
-        super().__init__()
+        # super().__init__()
+        super(Bottleneck, self).__init__()
 
         # all conv layers have stride 1. an avgpool is performed after the second convolution when stride > 1
         self.conv1 = nn.Conv2d(inplanes, planes, 1, bias=False)
@@ -117,7 +143,8 @@ class Bottleneck(nn.Module):
 
 class AttentionPool2d(nn.Module):
     def __init__(self, spacial_dim: int, embed_dim: int, num_heads: int, output_dim: int = None):
-        super().__init__()
+        # super().__init__()
+        super(AttentionPool2d, self).__init__()
         self.positional_embedding = nn.Parameter(torch.randn(spacial_dim ** 2 + 1, embed_dim) / embed_dim ** 0.5)
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.q_proj = nn.Linear(embed_dim, embed_dim)
@@ -161,7 +188,8 @@ class ModifiedResNet(nn.Module):
     """
 
     def __init__(self, layers, output_dim, heads, input_resolution=224, width=64):
-        super().__init__()
+        # super().__init__()
+        super(ModifiedResNet, self).__init__()
         self.output_dim = output_dim
         self.input_resolution = input_resolution
 
@@ -222,11 +250,171 @@ class LayerNorm(nn.LayerNorm):
 
 
 class QuickGELU(nn.Module):
+    """Quick GELU activation function."""
     def forward(self, x: torch.Tensor):
         return x * torch.sigmoid(1.702 * x)
 
 
+# ============================================================================
+# TempMe-Specific Components (LoRA & Frame Positional Embedding)
+# ============================================================================
+
+class Attention_TempMe(nn.Module):
+    """Multi-head attention with LoRA (Low-Rank Adaptation) for TempMe.
+    
+    This replaces nn.MultiheadAttention with custom implementation that supports
+    efficient fine-tuning through low-rank decomposition.
+    """
+    def __init__(self, embed_dim, num_heads, lora_dim):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scaling = float(self.head_dim) ** -0.5
+        self.lora_dim = lora_dim
+
+        self.in_proj_weight = nn.Parameter(torch.empty(3 * embed_dim, embed_dim))
+        self.in_proj_bias = nn.Parameter(torch.empty(3 * embed_dim))
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        
+        # LoRA parameters for efficient fine-tuning
+        self.TVPt_LoRA_a = nn.Parameter(torch.zeros(lora_dim, embed_dim))
+        nn.init.kaiming_uniform_(self.TVPt_LoRA_a, a=math.sqrt(5))
+        self.TVPt_LoRA_b = nn.Parameter(torch.zeros(3 * embed_dim, lora_dim))
+
+        # self._reset_parameters() ### lora init
+    
+    def _reset_parameters(self):
+        xavier_uniform_(self.in_proj_weight)
+        constant_(self.in_proj_bias, 0.)
+        constant_(self.out_proj.bias, 0.)
+    
+    def forward(self, x):
+        bsz, tgt_len, embed_dim = x.size()
+        q, k, v = F.linear(x, self.in_proj_weight, self.in_proj_bias).chunk(3, dim=-1)
+        q = q * self.scaling
+
+        q = q.contiguous().view(bsz, tgt_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        k = k.contiguous().view(bsz, tgt_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        v = v.contiguous().view(bsz, tgt_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+
+        attn = (q @ k.transpose(-2, -1))
+        attn = attn.softmax(dim=-1)
+        x = (attn @ v).transpose(1, 2).reshape(bsz, tgt_len, embed_dim)
+        x = F.linear(x, self.out_proj.weight, self.out_proj.bias)
+        
+        return x, None
+
+
+class ResidualAttentionBlock_TempMe(nn.Module):
+    """Residual attention block with LoRA and optional frame positional embedding (TempMe)."""
+    def __init__(self, d_model: int, n_head: int, lora_dim: int, frame_num: int, attn_mask=None):
+        super(ResidualAttentionBlock_TempMe, self).__init__()
+
+        # self.attn = nn.MultiheadAttention(d_model, n_head)
+        self.attn = Attention_TempMe(d_model, n_head, lora_dim)
+        self.ln_1 = LayerNorm(d_model)
+        self.mlp = nn.Sequential(OrderedDict([
+            ("c_fc", nn.Linear(d_model, d_model * 4)),
+            ("gelu", QuickGELU()),
+            ("c_proj", nn.Linear(d_model * 4, d_model))
+        ]))
+        self.ln_2 = LayerNorm(d_model)
+        self.attn_mask = attn_mask
+        self.n_head = n_head
+
+        # Frame positional embedding for video understanding
+        if frame_num > 0:
+            self.TVPt_Video_Positional_embedding = nn.Parameter(torch.zeros(1, frame_num, 1, d_model))
+
+    def attention(self, x: torch.Tensor):
+        attn_mask_ = self.attn_mask
+        if self.attn_mask is not None and hasattr(self.attn_mask, '__call__'):
+            attn_mask_ = self.attn_mask(x.size(0))  # LND
+
+        attn_mask_ = attn_mask_.to(dtype=x.dtype, device=x.device) if attn_mask_ is not None else None
+        return self.attn(x, x, x, need_weights=False, attn_mask=attn_mask_)[0]
+    
+    def forward(self, x, attn_mask=None):
+        # x = x + self.attention(self.ln_1(x))
+        x = x + self.attn(self.ln_1(x))[0]
+        x = x + self.mlp(self.ln_2(x))
+        return x
+
+
+class Transformer_TempMe(nn.Module):
+    """Transformer with LoRA and frame positional embeddings (TempMe)."""
+    def __init__(self, width: int, layers: int, heads: int, lora_dim: int, merge_layer: List[int], 
+                 frame_pos: int, frame_num_list: List[int], attn_mask=None):
+        super(Transformer_TempMe, self).__init__()
+        self.width = width
+        self.layers = layers
+
+        if frame_pos == 0:
+            self.resblocks = nn.Sequential(*[ResidualAttentionBlock_TempMe(width, heads, lora_dim, 0, attn_mask) 
+                                            for _ in range(layers)])
+        else:
+            resblocks_list = []
+            idx_pos = 0
+            for _l in range(layers):
+                if _l in merge_layer:
+                    resblocks_list.append(ResidualAttentionBlock_TempMe(width, heads, lora_dim, frame_num_list[idx_pos], attn_mask))
+                    idx_pos += 1
+                else:
+                    resblocks_list.append(ResidualAttentionBlock_TempMe(width, heads, lora_dim, 0, attn_mask))
+            self.resblocks = nn.Sequential(*resblocks_list)
+        
+    def forward(self, x: torch.Tensor):
+        return self.resblocks(x)
+
+
+class VisualTransformer_TempMe(nn.Module):
+    """Vision Transformer with LoRA and frame positional embeddings (TempMe)."""
+    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, 
+                 output_dim: int, lora_dim: int, merge_layer: List[int], frame_pos: int, frame_num_list: List[int]):
+        super(VisualTransformer_TempMe, self).__init__()
+        self.input_resolution = input_resolution
+        self.output_dim = output_dim
+
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+
+        scale = width ** -0.5
+        self.class_embedding = nn.Parameter(scale * torch.randn(width))
+        self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
+        self.ln_pre = LayerNorm(width)
+
+        self.transformer = Transformer_TempMe(width, layers, heads, lora_dim, merge_layer, frame_pos, frame_num_list)
+
+        self.ln_post = LayerNorm(width)
+        self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
+
+        # TempMe: Freeze conv1 weights
+        for param in self.conv1.parameters():
+            param.requires_grad = False
+
+    def forward(self, x: torch.Tensor, mask=None):
+        x = self.conv1(x)  # shape = [*, width, grid, grid]
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat(
+            [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
+             x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        
+        x = x + self.positional_embedding.to(x.dtype)
+        x = self.ln_pre(x)
+        
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        return x
+
+
+# ============================================================================
+# CLIPKG4Clip Components (Original)
+# ============================================================================
+
 class ResidualAttentionBlock(nn.Module):
+    """Residual attention block for CLIPKG4Clip (original)."""
     def __init__(self, d_model: int, n_head: int, attn_mask=None):
         super().__init__()
 
@@ -501,6 +689,235 @@ class CLIP(nn.Module):
         return logits_per_image, logits_per_text
 
 
+class CLIP_TempMe(nn.Module):
+    """CLIP model with LoRA and frame positional embeddings for TempMe.
+    
+    Enhanced CLIP with:
+    - LoRA (Low-Rank Adaptation) for efficient fine-tuning
+    - Frame positional embeddings for better video understanding
+    - Token merging capabilities
+    - Frozen token embeddings and conv1 layers
+    """
+    def __init__(self,
+                 embed_dim: int,
+                 # vision
+                 image_resolution: int,
+                 vision_layers: Union[Tuple[int, int, int, int], int],
+                 vision_width: int,
+                 vision_patch_size: int,
+                 # text
+                 context_length: int,
+                 vocab_size: int,
+                 transformer_width: int,
+                 transformer_heads: int,
+                 transformer_layers: int,
+                 # TempMe specific
+                 lora_dim: int,
+                 merge_layer: List[int],
+                 frame_pos: int,
+                 frame_num_list: List[int]
+                 ):
+        super(CLIP_TempMe, self).__init__()
+
+        self.context_length = context_length
+
+        if isinstance(vision_layers, (tuple, list)):
+            vision_heads = vision_width * 32 // 64
+            self.visual = ModifiedResNet(
+                layers=vision_layers,
+                output_dim=embed_dim,
+                heads=vision_heads,
+                input_resolution=image_resolution,
+                width=vision_width
+            )
+        else:
+            vision_heads = vision_width // 64
+            self.visual = VisualTransformer_TempMe(
+                input_resolution=image_resolution,
+                patch_size=vision_patch_size,
+                width=vision_width,
+                layers=vision_layers,
+                heads=vision_heads,
+                output_dim=embed_dim,
+                lora_dim=lora_dim,
+                merge_layer=merge_layer,
+                frame_pos=frame_pos,
+                frame_num_list=frame_num_list
+            )
+
+        if TEMPME_AVAILABLE and TransformerClip is not None:
+            self.transformer = TransformerClip(
+                width=transformer_width,
+                layers=transformer_layers,
+                heads=transformer_heads,
+                lora_dim=lora_dim
+                # attn_mask=self.build_attention_mask
+            )
+        else:
+            # Fallback to standard transformer if module_transformer not available
+            self.transformer = Transformer_TempMe(
+                width=transformer_width,
+                layers=transformer_layers,
+                heads=transformer_heads,
+                lora_dim=lora_dim,
+                merge_layer=[],
+                frame_pos=0,
+                frame_num_list=[]
+            )
+
+        self.vocab_size = vocab_size
+        self.token_embedding = nn.Embedding(vocab_size, transformer_width)
+        self.positional_embedding = nn.Parameter(torch.empty(self.context_length, transformer_width))
+        self.ln_final = LayerNorm(transformer_width)
+
+        self.text_projection = nn.Parameter(torch.empty(transformer_width, embed_dim))
+        self.logit_scale = nn.Parameter(torch.ones([]))
+
+        # TempMe: Freeze token embedding
+        self.token_embedding.requires_grad = False
+        
+        # TempMe: Optional context layers (for advanced text processing)
+        # self.ctx_layers = 0
+
+    def initialize_parameters(self):
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+        nn.init.normal_(self.positional_embedding, std=0.01)
+
+        if isinstance(self.visual, ModifiedResNet):
+            if self.visual.attnpool is not None:
+                std = self.visual.attnpool.c_proj.in_features ** -0.5
+                nn.init.normal_(self.visual.attnpool.q_proj.weight, std=std)
+                nn.init.normal_(self.visual.attnpool.k_proj.weight, std=std)
+                nn.init.normal_(self.visual.attnpool.v_proj.weight, std=std)
+                nn.init.normal_(self.visual.attnpool.c_proj.weight, std=std)
+
+            for resnet_block in [self.visual.layer1, self.visual.layer2, self.visual.layer3, self.visual.layer4]:
+                for name, param in resnet_block.named_parameters():
+                    if name.endswith("bn3.weight"):
+                        nn.init.zeros_(param)
+
+        proj_std = (self.transformer.width ** -0.5) * ((2 * self.transformer.layers) ** -0.5)
+        attn_std = self.transformer.width ** -0.5
+        fc_std = (2 * self.transformer.width) ** -0.5
+        for block in self.transformer.resblocks:
+            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
+
+        if self.text_projection is not None:
+            nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
+
+    # @staticmethod
+    # def get_config(pretrained_clip_name="ViT-B/32"):
+    #     """Same as CLIP.get_config"""
+    #     return CLIP.get_config(pretrained_clip_name)
+
+    @staticmethod
+    def get_config(pretrained_clip_name="ViT-B/32"):
+        model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ViT-B-32.pt")
+        if pretrained_clip_name in _MODELS and pretrained_clip_name in _PT_NAME:
+            model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _PT_NAME[pretrained_clip_name])
+
+        if pretrained_clip_name in ["ViT-B/32", "ViT-B/16"] and os.path.exists(model_path):
+            pass
+        else:
+            if pretrained_clip_name in _MODELS:
+                model_path = _download(_MODELS[pretrained_clip_name])
+            elif os.path.isfile(pretrained_clip_name):
+                model_path = pretrained_clip_name
+            else:
+                raise RuntimeError(f"Model {pretrained_clip_name} not found; available models = {available_models()}")
+
+        try:
+            # loading JIT archive
+            model = torch.jit.load(model_path, map_location="cpu").eval()
+            state_dict = model.state_dict()
+        except RuntimeError:
+            state_dict = torch.load(model_path, map_location="cpu")
+
+        return state_dict
+
+    # def build_attention_mask(self, context_length):
+    #     mask = torch.zeros(context_length, context_length)
+    #     mask.fill_(float("-inf"))
+    #     mask.triu_(1)
+    #     return mask
+
+    def build_attention_mask(self, context_length):
+        # lazily create causal attention mask, with full attention between the vision tokens
+        # pytorch uses additive attention mask; fill with -inf
+        mask = torch.zeros(context_length, context_length)
+        mask.fill_(float("-inf"))
+        mask.triu_(1)  # zero out the lower diagonal
+        return mask
+
+    @property
+    def dtype(self):
+        return self.visual.conv1.weight.dtype if hasattr(self.visual, 'conv1') else torch.float32
+
+    def encode_image(self, image, return_hidden=False, mask=None):
+        hidden = self.visual(image.type(self.dtype))
+        hidden = self.visual.ln_post(hidden) @ self.visual.proj
+
+        x = hidden[:, 0, :]
+
+        if return_hidden:
+            return x, hidden
+
+        return x
+
+    def encode_text(self, text, return_hidden=False, mask=None):
+        x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+
+        pos_emd = self.positional_embedding[:x.size(1), :].type(self.dtype)
+        
+        attn_mask = self.build_attention_mask(x.size(1)).repeat(x.size(0), 1, 1).to(mask.device)
+        inf = torch.zeros((x.size(1), x.size(1))).fill_(float("-inf")).repeat(x.size(0), 1, 1).to(mask.device)
+        mask = mask.unsqueeze(1).expand(-1, mask.size(1), -1)
+        attn_mask = torch.where(mask>0, attn_mask, inf)
+        
+        if self.ctx_layers > 0:
+            text_end = text.argmax(dim=-1)
+            for b_i in range(x.size(0)):
+                attn_mask[b_i, text_end[b_i]][-self.ctx_text:] = 0
+                for t_i in range(1, self.ctx_text):
+                    attn_mask[b_i, -(t_i+1)][-t_i:] = 0
+
+        x = x + pos_emd
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x, attn_mask)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        hidden = self.ln_final(x).type(self.dtype) @ self.text_projection
+
+        x = hidden[torch.arange(hidden.shape[0]), text.argmax(dim=-1)]
+
+        if return_hidden:
+            return x, hidden
+
+        return x
+
+    def forward(self, image, text):
+        image_features = self.encode_image(image)
+        text_features = self.encode_text(text)
+
+        # normalized features
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+        # cosine similarity as logits
+        logit_scale = self.logit_scale.exp()
+        logits_per_image = logit_scale * image_features @ text_features.t()
+        logits_per_text = logit_scale * text_features @ image_features.t()
+
+        return logits_per_image, logits_per_text
+
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
 def convert_weights(model: nn.Module):
     """Convert applicable model parameters to fp16"""
 
@@ -515,6 +932,20 @@ def convert_weights(model: nn.Module):
                 tensor = getattr(l, attr)
                 if tensor is not None:
                     tensor.data = tensor.data.half()
+
+        # TempMe: Handle custom Attention classes with LoRA
+        if isinstance(l, Attention_TempMe) or (TEMPME_AVAILABLE and TAttention and isinstance(l, TAttention)):
+            for attr in ["in_proj_weight", "in_proj_bias", "TVPt_LoRA_a", "TVPt_LoRA_b"]:
+                if hasattr(l, attr):
+                    tensor = getattr(l, attr)
+                    if tensor is not None:
+                        tensor.data = tensor.data.half()
+            # Handle optional spatial-temporal LoRA
+            for attr in ["TVPt_LoRA_st_a", "TVPt_LoRA_st_b"]:
+                if hasattr(l, attr):
+                    tensor = getattr(l, attr)
+                    if tensor is not None:
+                        tensor.data = tensor.data.half()
 
         for name in ["text_projection", "proj"]:
             if hasattr(l, name):

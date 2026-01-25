@@ -1,3 +1,8 @@
+"""Cross-modal Transformer Module - Unified version for CLIPKG4Clip and TempMe.
+
+This module contains the cross-modal transformer architecture used for video-text interaction.
+Includes components from both CLIPKG4Clip (original) and TempMe (with DropPath for regularization).
+"""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -14,6 +19,7 @@ import shutil
 import torch
 from torch import nn
 import torch.nn.functional as F
+from timm.models.layers import drop_path
 from .file_utils import cached_path
 from .until_config import PretrainedConfig
 from .until_module import PreTrainedModel, LayerNorm, ACT2FN
@@ -89,11 +95,38 @@ class CrossConfig(PretrainedConfig):
             raise ValueError("First argument must be either a vocabulary size (int)"
                              "or the path to a pretrained model config file (str)")
 
+# ============================================================================
+# Shared Components (CLIPKG4Clip & TempMe)
+# ============================================================================
+
 class QuickGELU(nn.Module):
+    """Quick GELU activation function used in transformer blocks."""
     def forward(self, x: torch.Tensor):
         return x * torch.sigmoid(1.702 * x)
 
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    
+    TempMe-specific component for regularization during training.
+    Used in advanced training configurations with stochastic depth.
+    """
+
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
+
+    def extra_repr(self) -> str:
+        return 'p={}'.format(self.drop_prob)
+
 class ResidualAttentionBlock(nn.Module):
+    """Residual attention block with multi-head self-attention and MLP.
+    
+    Used in both CLIPKG4Clip and TempMe. Can optionally use DropPath for regularization.
+    """
     def __init__(self, d_model: int, n_head: int):
         super().__init__()
 
@@ -120,6 +153,7 @@ class ResidualAttentionBlock(nn.Module):
         return (x, attn_mask)
 
 class Transformer(nn.Module):
+    """Transformer encoder with stacked residual attention blocks."""
     def __init__(self, width: int, layers: int, heads: int):
         super().__init__()
         self.width = width
@@ -128,6 +162,10 @@ class Transformer(nn.Module):
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         return self.resblocks((x, attn_mask))[0]
+
+# ============================================================================
+# CLIPKG4Clip-Specific Components (Full Cross Model)
+# ============================================================================
 
 class CrossEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings.
