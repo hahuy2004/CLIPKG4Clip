@@ -242,6 +242,12 @@ def get_args(description='CLIPKG4Clip on Retrieval Task'):
                 f"TempMe mode requires pretrained_path: {args.pretrained_path}. "
                 "Please download CLIP pretrained models (e.g., ViT-B-32.pt)."
             )
+        # Validate anno_path and video_path (required for TempMe dataloaders)
+        if args.do_train and (args.anno_path is None or args.video_path is None):
+            raise ValueError(
+                "TempMe training requires --anno_path and --video_path. "
+                "Example: --anno_path /data/MSRVTT/annotations --video_path /data/MSRVTT/videos"
+            )
         # Set TempMe defaults if not specified (Note: logger not initialized yet, will log later)
         if args.tome_r == 0:
             args.tome_r = 2
@@ -1178,12 +1184,17 @@ def main():
     # ========================================================================
     # TempMe Mode: Initialize global variables and args mapping
     # ========================================================================
+    # These are used in train_epoch() for periodic evaluation
+    sim_name_list = ['base']
+    sim_matrix_num = len(sim_name_list)
+    best_score = 0.00001
+    best_score_list = [0.00001 for _ in range(sim_matrix_num)]
+    meters = None
+    
+    # ========================================================================
+    # TempMe Mode: Additional initialization and args mapping
+    # ========================================================================
     if args.use_tempme:
-        # Initialize global tracking variables for TempMe
-        sim_name_list = ['base']
-        sim_matrix_num = len(sim_name_list)
-        best_score = 0.00001
-        best_score_list = [0.00001 for _ in range(sim_matrix_num)]
         meters = MetricLogger(delimiter="  ") if METRICLOGGER_AVAILABLE else None
         logger.info("[TempMe] Initialized global tracking variables")
         

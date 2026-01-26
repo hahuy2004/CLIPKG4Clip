@@ -63,63 +63,115 @@ python preprocess/compress_video.py --input_root [raw_video_path] --output_root 
 ```
 This script will compress the video to *3fps* with width *224* (or height *224*). Modify the variables for your customization.
 
-## How to Run 
+## Training Modes
 
->`--features_path` is the video root path
-> 
->`--linear_patch` can be set with `2d` or `3d`
-> 
-> `--sim_header` can be set with `meanP`, `seqLSTM`, `seqTransf`, or `tightTransf`
-> 
-> `--pretrained_clip_name` can be set with `ViT-B/32` or `ViT-B/16`
-> 
-> `--resume_model` can be used to reload the saved optimizer state to continuely train the model, **Note**: need to set the corresponding chechpoint via `--init_model` simultaneously. 
+This repository supports **two training modes**:
 
-read our paper for more details on `--linear_patch` and `--sim_header`. Test more hyperparameters for better performance. 
+1. **CLIPKG4Clip (Original)**: Standard CLIP4Clip training with BertAdam optimizer
+2. **TempMe Mode**: Enhanced training with LoRA (Low-Rank Adaptation) and ToMe (Token Merging) for efficiency
 
-Download CLIP (ViT-B/32) weight,
+### Mode Comparison
+
+| Feature | CLIPKG4Clip | TempMe |
+|---------|-------------|---------|
+| **Optimizer** | BertAdam | AdamW |
+| **Fine-tuning** | Full model | LoRA parameters only |
+| **Token Merging** | ❌ | ✅ (ToMe) |
+| **Frame Position Embedding** | ❌ | ✅ |
+| **Data Augmentation** | Basic | Advanced (RandAugment + RandomErasing) |
+| **Video Loading** | OpenCV | Decord (faster) |
+
+## How to Run
+
+### Prerequisites
+
+Download CLIP pretrained weights:
+
+**For CLIPKG4Clip mode** (to `./modules`):
 ```sh
 wget -P ./modules https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt
 ```
-or, download CLIP (ViT-B/16) weight,
+
+**For TempMe mode** (to `./pretrained`):
 ```sh
-wget -P ./modules https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt
+mkdir -p pretrained
+wget -P ./pretrained https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt
 ```
 
-Then, run
+**For TempMe mode**, also install:
+```sh
+pip install decord
+```
 
+### Key Parameters
 
-*The CLIP (ViT-B/32) is the default setting in the paper, replacing with the ViT-B/16 for better performance.*
+**CLIPKG4Clip mode:**
+- `--features_path`: video root path
+- `--linear_patch`: can be `2d` or `3d`
+- `--sim_header`: can be `meanP`, `seqLSTM`, `seqTransf`, or `tightTransf`
+- `--pretrained_clip_name`: `ViT-B/32` or `ViT-B/16`
+
+**TempMe mode:**
+- `--use_tempme`: enable TempMe mode
+- `--anno_path`: annotation folder path
+- `--video_path`: video folder path
+- `--base_encoder`: CLIP backbone (`ViT-B/32` or `ViT-B/16`)
+- `--lora_dim`: LoRA dimension (default: 8)
+- `--tome_r`: token reduction per layer (default: 2)
+- `--use_aug`: enable data augmentation
 
 ### MSRVTT
 
+**CLIPKG4Clip Mode (Original):**
 ```sh
 DATA_PATH=[Your MSRVTT data and videos path]
 python -m torch.distributed.launch --nproc_per_node=4 \
-main_task_retrieval.py --do_train --num_thread_reader=0 \
+main_task_retrieval.py --do_train --num_thread_reader=2 \
 --epochs=5 --batch_size=128 --n_display=50 \
 --train_csv ${DATA_PATH}/MSRVTT_train.9k.csv \
 --val_csv ${DATA_PATH}/MSRVTT_JSFUSION_test.csv \
 --data_path ${DATA_PATH}/MSRVTT_data.json \
 --features_path ${DATA_PATH}/MSRVTT_Videos \
---output_dir ckpts/ckpt_msrvtt_retrieval_looseType \
+--output_dir ckpts/ckpt_msrvtt_clipkg4clip \
 --lr 1e-4 --max_words 32 --max_frames 12 --batch_size_val 16 \
---datatype msrvtt --expand_msrvtt_sentences  \
+--datatype msrvtt --expand_msrvtt_sentences \
 --feature_framerate 1 --coef_lr 1e-3 \
---freeze_layer_num 0  --slice_framepos 2 \
+--freeze_layer_num 0 --slice_framepos 2 \
 --loose_type --linear_patch 2d --sim_header meanP \
 --pretrained_clip_name ViT-B/32
 ```
 
+**TempMe Mode (with LoRA + ToMe):**
+```sh
+DATA_PATH=[Your MSRVTT data path]
+python -m torch.distributed.launch --nproc_per_node=4 \
+main_task_retrieval.py --do_train --use_tempme \
+--epochs=5 --batch_size=128 --n_display=50 \
+--anno_path ${DATA_PATH}/annotations \
+--video_path ${DATA_PATH}/videos \
+--output_dir ckpts/ckpt_msrvtt_tempme \
+--clip_lr 6e-4 --weight_decay 0.2 \
+--max_words 32 --max_frames 12 --batch_size_val 16 \
+--datatype msrvtt --workers 8 \
+--video_framerate 1 --pretrained_path pretrained \
+--base_encoder ViT-B/32 \
+--tome_r 2 --lora_dim 8 --frame_pos 1 \
+--merge_layer 8-9-10 --merge_frame_num 2-2-3 \
+--merge_token_proportion 30-10 \
+--use_aug
+```
+
 ### MSVD
+
+**CLIPKG4Clip Mode (Original):**
 ```sh
 DATA_PATH=[Your MSVD data and videos path]
 python -m torch.distributed.launch --nproc_per_node=4 \
 main_task_retrieval.py --do_train --num_thread_reader=2 \
 --epochs=5 --batch_size=128 --n_display=50 \
---data_path ${DATA_PATH} \
+--data_path ${DATA_PATH}/msvd_data.json \
 --features_path ${DATA_PATH}/MSVD_Videos \
---output_dir ckpts/ckpt_msvd_retrieval_looseType \
+--output_dir ckpts/ckpt_msvd_clipkg4clip \
 --lr 1e-4 --max_words 32 --max_frames 12 --batch_size_val 16 \
 --datatype msvd \
 --feature_framerate 1 --coef_lr 1e-3 \
@@ -128,33 +180,69 @@ main_task_retrieval.py --do_train --num_thread_reader=2 \
 --pretrained_clip_name ViT-B/32
 ```
 
-### LSMDC
+**CLIPKG4Clip Mode (Original):**
 ```sh
 DATA_PATH=[Your LSMDC data and videos path]
 python -m torch.distributed.launch --nproc_per_node=4 \
 main_task_retrieval.py --do_train --num_thread_reader=2 \
 --epochs=5 --batch_size=128 --n_display=50 \
---data_path ${DATA_PATH} \
+--data_path ${DATA_PATH}/lsmdc_data.json \
 --features_path ${DATA_PATH}/LSMDC_Videos \
---output_dir ckpts/ckpt_lsmdc_retrieval_looseType \
+--output_dir ckpts/ckpt_lsmdc_clipkg4clip \
 --lr 1e-4 --max_words 32 --max_frames 12 --batch_size_val 16 \
 --datatype lsmdc --feature_framerate 1 --coef_lr 1e-3 \
---freeze_layer_num 0  --slice_framepos 2 \
+--freeze_layer_num 0 --slice_framepos 2 \
 --loose_type --linear_patch 2d --sim_header meanP \
 --pretrained_clip_name ViT-B/32
 ```
 
 ### ActivityNet
+
 ActivityNet is regarded as video-paragraph retrieval in our setting, thus, need more GPUs (or run with multi-node).
+
+**CLIPKG4Clip Mode (Original):**
 ```sh
 DATA_PATH=[Your ActivityNet data and videos path]
 python -m torch.distributed.launch --nproc_per_node=8 \
 main_task_retrieval.py --do_train --num_thread_reader=2 \
 --epochs=5 --batch_size=128 --n_display=50 \
---data_path ${DATA_PATH} \
+--data_path ${DATA_PATH}/activity_data.json \
 --features_path ${DATA_PATH}/Activity_Videos \
---output_dir ckpts/ckpt_activity_retrieval_looseType \
+--output_dir ckpts/ckpt_activity_clipkg4clip \
 --lr 1e-4 --max_words 64 --max_frames 64 --batch_size_val 16 \
+--datatype activity --feature_framerate 1 --coef_lr 1e-3 \
+--freeze_layer_num 0 --slice_framepos 2 \
+--loose_type --linear_patch 2d --sim_header meanP \
+--pretrained_clip_name ViT-B/32
+```
+
+### DiDeMo
+
+DiDeMo is regarded as video-paragraph retrieval in our setting, thus, need more GPUs (or run with multi-node).
+
+**CLIPKG4Clip Mode (Original):**
+```sh
+DATA_PATH=[Your DiDeMo data and videos path]
+python -m torch.distributed.launch --nproc_per_node=8 \
+main_task_retrieval.py --do_train --num_thread_reader=2 \
+--epochs=5 --batch_size=128 --n_display=50 \
+--data_path ${DATA_PATH}/didemo_data.json \
+--features_path ${DATA_PATH}/DiDeMo_Videos \
+--output_dir ckpts/ckpt_didemo_clipkg4clip \
+--lr 1e-4 --max_words 64 --max_frames 64 --batch_size_val 16 \
+--datatype didemo --feature_framerate 1 --coef_lr 1e-3 \
+--freeze_layer_num 0 --slice_framepos 2 \
+--loose_type --linear_patch 2d --sim_header meanP \
+--pretrained_clip_name ViT-B/32
+```
+
+## Notes
+
+- **For Windows**: Replace `\` with `^` for line continuation
+- **TempMe mode** requires proper annotation and video folder structure
+- **CLIPKG4Clip mode** requires CSV files and JSON data files
+- Adjust `--nproc_per_node` based on your available GPUs
+- TempMe mode is more memory efficient due to LoRA and ToMe optimizationsr 1e-4 --max_words 64 --max_frames 64 --batch_size_val 16 \
 --datatype activity --feature_framerate 1 --coef_lr 1e-3 \
 --freeze_layer_num 0  --slice_framepos 2 \
 --loose_type --linear_patch 2d --sim_header meanP \
