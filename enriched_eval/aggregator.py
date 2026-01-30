@@ -113,7 +113,7 @@ class Aggregator:
                 ranking = np.argsort(sim_scores)[::-1]
                 
                 # Create rank array: rank[video_idx] = rank of that video (1-indexed)
-                ranks = np.zeros(n_videos, dtype=np.float32)
+                ranks = np.zeros(n_videos, dtype=float)
                 for rank_position, video_idx in enumerate(ranking):
                     ranks[video_idx] = rank_position + 1  # 1-indexed rank
                 

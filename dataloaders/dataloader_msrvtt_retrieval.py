@@ -109,7 +109,7 @@ class MSRVTT_DataLoader(Dataset):
 
         # Pair x L x T x 3 x H x W
         video = np.zeros((len(choice_video_ids), self.max_frames, 1, 3,
-                          self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=np.float32)
+                          self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=float)
 
         for i, video_id in enumerate(choice_video_ids):
             # Individual for YoucokII dataset, due to it video format
@@ -271,7 +271,7 @@ class MSRVTT_TrainDataLoader(Dataset):
 
         # Pair x L x T x 3 x H x W
         video = np.zeros((len(choice_video_ids), self.max_frames, 1, 3,
-                          self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=np.float32)
+                          self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=float)
 
         for i, video_id in enumerate(choice_video_ids):
             # Individual for YoucokII dataset, due to it video format
@@ -471,7 +471,7 @@ class RetrievalDataset_TempMe(Dataset):
         max_video_length = 0
 
         # T x 3 x H x W
-        video = np.zeros((self.max_frames, 3, self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=np.float)
+        video = np.zeros((self.max_frames, 3, self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=float)
 
         if s is None:
             start_time, end_time = None, None
@@ -519,7 +519,7 @@ class RetrievalDataset_TempMe(Dataset):
         max_video_length = 0
 
         # T x 3 x H x W
-        video = np.zeros((self.max_frames, 3, self.image_resolution, self.image_resolution), dtype=np.float)
+        video = np.zeros((self.max_frames, 3, self.image_resolution, self.image_resolution), dtype=float)
 
         if s is None:
             start_time, end_time = None, None
