@@ -973,56 +973,93 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
     model.eval()
     tokenizer = ClipTokenizer()
     
-    # Define CLIP special tokens (same as dataloader)
-    SPECIAL_TOKEN = {
-        "CLS_TOKEN": "<|startoftext|>", 
-        "SEP_TOKEN": "<|endoftext|>",
-        "MASK_TOKEN": "[MASK]", 
-        "UNK_TOKEN": "[UNK]", 
-        "PAD_TOKEN": "[PAD]"
-    }
+    # Define CLIP special tokens (MUST use exact same as dataloader)
+    SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
+                     "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
     
     with torch.no_grad():
         # ========================================================
-        # Step 1: Extract video features (SAME AS eval_epoch)
+        # Step 1: Extract video features for UNIQUE videos only
         # ========================================================
-        logger.info("\nStep 1/4: Extracting video features from dataloader...")
+        logger.info("\nStep 1/4: Extracting video features for unique videos...")
+        
+        # Get UNIQUE video IDs in order of first appearance
+        all_video_ids = test_dataloader.dataset.data['video_id'].values.tolist()
+        unique_video_ids = []
+        seen = set()
+        for vid in all_video_ids:
+            if vid not in seen:
+                unique_video_ids.append(vid)
+                seen.add(vid)
+        
+        n_videos = len(unique_video_ids)
+        logger.info(f"Total rows in CSV: {len(all_video_ids)}")
+        logger.info(f"Unique videos to process: {n_videos}")
+        logger.info(f"First 3 unique video IDs: {unique_video_ids[:3]}")
+        
+        # Create video_id -> feature index mapping
+        video_id_to_idx = {vid: idx for idx, vid in enumerate(unique_video_ids)}
+        
+        # Extract features for unique videos only
         batch_visual_output_list = []
         batch_list_v = []
         
-        # Get video IDs in dataloader order
-        dataloader_video_ids = test_dataloader.dataset.data['video_id'].values.tolist()
+        processed_videos = 0
+        row_idx = 0  # Track current row index in CSV
+        seen = set()  # Reset seen set for duplicate detection during extraction
         
         for bid, batch in enumerate(test_dataloader):
             batch = tuple(t.to(device) for t in batch)
             input_ids, input_mask, segment_ids, video, video_mask = batch
             
-            # Extract visual features (SAME as eval_epoch - reuse existing code)
-            visual_output = model.get_visual_output(video, video_mask)
-            batch_visual_output_list.append(visual_output)
-            batch_list_v.append((video_mask,))
+            # batch contains multiple videos (batch_size_val)
+            batch_size = video.shape[0]
             
-            print(f"{bid+1}/{len(test_dataloader)}\r", end="")
+            # Extract visual features for entire batch at once (same as eval_epoch)
+            visual_output = model.get_visual_output(video, video_mask)
+            
+            # Process each video in the batch
+            for i in range(batch_size):
+                current_video_id = all_video_ids[row_idx]
+                row_idx += 1
+                
+                # Only keep if this is the FIRST occurrence of this video
+                if current_video_id in seen:
+                    continue  # Skip duplicate
+                
+                # Mark as seen
+                seen.add(current_video_id)
+                
+                # Extract single video features from batch
+                single_visual_output = visual_output[i:i+1]  # Keep batch dimension
+                single_video_mask = video_mask[i:i+1]
+                
+                batch_visual_output_list.append(single_visual_output)
+                batch_list_v.append((single_video_mask,))
+                processed_videos += 1
+                
+                if processed_videos % 100 == 0 or processed_videos == n_videos:
+                    print(f"Processed {processed_videos}/{n_videos} unique videos\r", end="")
+                
+                # Early stop if we've processed all unique videos
+                if processed_videos >= n_videos:
+                    break
+            
+            if processed_videos >= n_videos:
+                break
         
         print()  # New line
-        n_videos = len(dataloader_video_ids)
-        logger.info(f"Extracted features for {n_videos} videos in dataloader order")
-        logger.info(f"First 3 video IDs: {dataloader_video_ids[:3]}")
-        
-        print()  # New line
-        n_videos = len(dataloader_video_ids)
-        logger.info(f"Extracted features for {n_videos} videos in dataloader order")
-        logger.info(f"First 3 video IDs: {dataloader_video_ids[:3]}")
+        logger.info(f"Extracted features for {len(batch_visual_output_list)} unique videos")
         
         # ========================================================
         # Step 2: Extract text features for k+1 queries/video
-        # Following DATALOADER ORDER (not CSV sorted order!)
+        # Process queries in order of UNIQUE videos
         # ========================================================
         logger.info(f"\nStep 2/4: Extracting text features for {expected_k} queries/video...")
         batch_sequence_output_list = []  # Will store text features for ALL queries
         batch_list_t = []
         
-        for vid_idx, video_id in enumerate(dataloader_video_ids):
+        for vid_idx, video_id in enumerate(unique_video_ids):
             if video_id not in video_queries:
                 logger.error(f"Video {video_id} not found in FQS CSV!")
                 continue

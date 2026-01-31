@@ -64,6 +64,33 @@ class MSRVTT_DataLoader(Dataset):
         self.rawVideoExtractor = RawVideoExtractor(framerate=feature_framerate, size=image_resolution)
         self.SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
                               "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
+        
+        # Check if dataset has multiple sentences per video
+        video_ids = self.data['video_id'].values
+        unique_videos = []
+        seen = set()
+        for vid in video_ids:
+            if vid not in seen:
+                unique_videos.append(vid)
+                seen.add(vid)
+        
+        # If number of rows > number of unique videos, we have multi-sentence per video
+        if len(self.data) > len(unique_videos):
+            self.multi_sentence_per_video = True
+            # Calculate cut_off_points: index of last sentence for each video
+            self.cut_off_points = []
+            current_video = None
+            for idx, vid in enumerate(video_ids):
+                if current_video is not None and vid != current_video:
+                    self.cut_off_points.append(idx - 1)
+                current_video = vid
+            # Add the last video's cut_off_point
+            self.cut_off_points.append(len(self.data) - 1)
+            
+            self.sentence_num = len(self.data)
+            self.video_num = len(unique_videos)
+        else:
+            self.multi_sentence_per_video = False
 
     def __len__(self):
         return len(self.data)
