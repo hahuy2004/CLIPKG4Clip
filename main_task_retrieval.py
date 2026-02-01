@@ -213,8 +213,8 @@ def get_args(description='CLIPKG4Clip on Retrieval Task'):
     # Enriched evaluation parameters
     parser.add_argument('--eval_enriched', type=int, default=0, choices=[0, 1],
                         help='Use enriched queries: 0=no (baseline with val_csv), 1=yes (FQS with val_csv containing k+1 queries)')
-    parser.add_argument('--aggregation_strategy', type=int, default=1, choices=[1, 2],
-                        help='Aggregation strategy: 1=Majority Voting, 2=Average Similarity (only when eval_enriched=1)')
+    parser.add_argument('--aggregation_strategy', type=int, default=1, choices=[1, 2, 3],
+                        help='Aggregation strategy: 1=Weighted RRF, 2=Average Similarity, 3=True Majority Voting (only when eval_enriched=1)')
     parser.add_argument('--fqs_k', type=int, default=2,
                         help='Number of enriched queries per video (default: 2, total k+1=3 queries)')
 

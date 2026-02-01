@@ -14,8 +14,9 @@ class Aggregator:
     Aggregates multiple similarity matrices using different strategies.
     
     Strategies:
-        1 = Majority Voting (voting based on inverse rank scores)
+        1 = Weighted RRF (Weighted Reciprocal Rank Fusion)
         2 = Average Similarity (simple average of similarity matrices)
+        3 = True Majority Voting (hard voting with tie-breaking)
     """
     
     def __init__(self, strategy=1):
@@ -24,14 +25,20 @@ class Aggregator:
         
         Args:
             strategy (int): Aggregation strategy
-                           1 = Majority Voting
+                           1 = Weighted RRF (Reciprocal Rank Fusion)
                            2 = Average Similarity
+                           3 = True Majority Voting (hard voting)
         """
-        if strategy not in [1, 2]:
-            raise ValueError(f"Invalid strategy: {strategy}. Must be 1 (Voting) or 2 (Average)")
+        if strategy not in [1, 2, 3]:
+            raise ValueError(f"Invalid strategy: {strategy}. Must be 1 (Weighted RRF), 2 (Average), or 3 (True Majority Voting)")
         
         self.strategy = strategy
-        self.strategy_name = "Majority Voting" if strategy == 1 else "Average Similarity"
+        if strategy == 1:
+            self.strategy_name = "Weighted RRF"
+        elif strategy == 2:
+            self.strategy_name = "Average Similarity"
+        else:
+            self.strategy_name = "True Majority Voting"
     
     def aggregate(self, sim_matrices):
         """
@@ -45,9 +52,11 @@ class Aggregator:
             np.ndarray: Aggregated similarity matrix, shape (n_queries, n_videos)
         """
         if self.strategy == 1:
-            return self.voting_aggregation(sim_matrices)
-        else:  # strategy == 2
+            return self.weighted_rrf_aggregation(sim_matrices)
+        elif self.strategy == 2:
             return self.average_aggregation(sim_matrices)
+        else:  # strategy == 3
+            return self.true_majority_voting(sim_matrices)
     
     def average_aggregation(self, sim_matrices):
         """
@@ -68,8 +77,10 @@ class Aggregator:
         avg_sim = np.mean(sim_matrices, axis=0)
         return avg_sim
     
-    def voting_aggregation(self, sim_matrices):
+    def weighted_rrf_aggregation(self, sim_matrices):
         """
+        Weighted Reciprocal Rank Fusion (RRF) aggregation.
+        
         Improved Majority Voting aggregation using Weighted Reciprocal Rank Fusion (RRF).
         
         Key Improvements over naive 1/rank:
@@ -163,6 +174,65 @@ class Aggregator:
         # across different queries.
         
         return final_score_matrix
+    
+    def true_majority_voting(self, sim_matrices):
+        """
+        True Majority Voting aggregation with tie-breaking.
+        
+        Each query variant "votes" for its top-1 video. The video with the most votes wins.
+        In case of ties (e.g., 1-1-1), we use the original query's similarity as a tie-breaker.
+        
+        Why this handles 1-1-1 ties:
+        - Original query votes for Video A (vote=1)
+        - Enriched query 1 votes for Video B (vote=1)
+        - Enriched query 2 votes for Video C (vote=1)
+        
+        Tie-breaking formula:
+            Final_Score = Vote_Count + (1e-4 * Similarity_From_Original_Query)
+        
+        Since Video A is top-1 for the original query, Sim(Original, A) > Sim(Original, B).
+        Therefore, Video A gets the highest final score and wins.
+        
+        Process:
+        1. For each query variant, find its top-1 video (argmax)
+        2. Count votes for each video
+        3. Add tiny weighted similarity from original query as tie-breaker
+        4. Return final score matrix
+        
+        Args:
+            sim_matrices (np.ndarray): Shape (k+1, n_queries, n_videos)
+        
+        Returns:
+            np.ndarray: Final score matrix, shape (n_queries, n_videos)
+        """
+        k_plus_1, n_queries, n_videos = sim_matrices.shape
+        
+        # Initialize vote count matrix and final score matrix
+        vote_counts = np.zeros((n_queries, n_videos))
+        
+        # Step 1: Count votes from all query variants
+        for idx in range(k_plus_1):
+            sim_matrix = sim_matrices[idx]  # Shape: (n_queries, n_videos)
+            
+            # For each query, find its top-1 video
+            top1_videos = np.argmax(sim_matrix, axis=1)  # Shape: (n_queries,)
+            
+            # Cast votes (increment vote count for top-1 videos)
+            for query_idx in range(n_queries):
+                video_idx = top1_videos[query_idx]
+                vote_counts[query_idx, video_idx] += 1
+        
+        # Step 2: Add tie-breaker using original query's similarity
+        # Formula: Final_Score = Vote_Count + (1e-4 * Sim_Original)
+        # The 1e-4 weight ensures votes dominate, but ties are broken by original similarity
+        sim_original = sim_matrices[0]  # Original query's similarity matrix
+        tie_breaker_weight = 1e-4
+        
+        final_score_matrix = vote_counts + (tie_breaker_weight * sim_original)
+        
+        # Step 3: Return final scores
+        # Note: Higher score = better, same as similarity matrices
+        return final_score_matrix
 
 
 def test_aggregator():
@@ -189,27 +259,27 @@ def test_aggregator():
     print(f"\nWeights: [1.0 (original), 0.4 (enriched1), 0.4 (enriched2)]")
     print(f"Smoothing constant k: 1.0")
     
-    # Test Strategy 1: Weighted RRF Voting
+    # Test Strategy 1: Weighted RRF
     print("\n" + "-"*70)
-    print("Testing Strategy 1: Weighted RRF Voting")
+    print("Testing Strategy 1: Weighted RRF")
     print("-"*70)
     
-    aggregator_voting = Aggregator(strategy=1)
-    final_sim_voting = aggregator_voting.aggregate(sim_matrices)
+    aggregator_rrf = Aggregator(strategy=1)
+    final_sim_rrf = aggregator_rrf.aggregate(sim_matrices)
     
-    print(f"Output shape: {final_sim_voting.shape}")
-    print(f"Output range: [{final_sim_voting.min():.4f}, {final_sim_voting.max():.4f}]")
+    print(f"Output shape: {final_sim_rrf.shape}")
+    print(f"Output range: [{final_sim_rrf.min():.4f}, {final_sim_rrf.max():.4f}]")
     
     # Show top-5 videos for first query
-    query_0_scores = final_sim_voting[0]
-    top5_indices = np.argsort(query_0_scores)[::-1][:5]
+    query_0_scores_rrf = final_sim_rrf[0]
+    top5_indices_rrf = np.argsort(query_0_scores_rrf)[::-1][:5]
     print(f"\nQuery 0 - Top 5 videos (Weighted RRF):")
-    for rank, video_idx in enumerate(top5_indices, 1):
-        print(f"  Rank {rank}: Video {video_idx:3d} (score: {query_0_scores[video_idx]:.4f})")
+    for rank, video_idx in enumerate(top5_indices_rrf, 1):
+        print(f"  Rank {rank}: Video {video_idx:3d} (score: {query_0_scores_rrf[video_idx]:.4f})")
     
     # Verify weighted contribution
-    print(f"\nVerifying weighted RRF formula for Query 0, Video {top5_indices[0]}:")
-    vid_idx = top5_indices[0]
+    print(f"\nVerifying weighted RRF formula for Query 0, Video {top5_indices_rrf[0]}:")
+    vid_idx = top5_indices_rrf[0]
     for k_idx in range(k_plus_1):
         sim = sim_matrices[k_idx, 0, vid_idx]
         rank = np.sum(sim_matrices[k_idx, 0, :] > sim)  # 0-based rank
@@ -236,26 +306,74 @@ def test_aggregator():
     for rank, video_idx in enumerate(top5_indices_avg, 1):
         print(f"  Rank {rank}: Video {video_idx:3d} (score: {query_0_scores_avg[video_idx]:.4f})")
     
+    # Test Strategy 3: True Majority Voting
+    print("\n" + "-"*70)
+    print("Testing Strategy 3: True Majority Voting (Hard Voting)")
+    print("-"*70)
+    
+    aggregator_majority = Aggregator(strategy=3)
+    final_sim_majority = aggregator_majority.aggregate(sim_matrices)
+    
+    print(f"Output shape: {final_sim_majority.shape}")
+    print(f"Output range: [{final_sim_majority.min():.4f}, {final_sim_majority.max():.4f}]")
+    
+    # Show top-5 videos for first query
+    query_0_scores_majority = final_sim_majority[0]
+    top5_indices_majority = np.argsort(query_0_scores_majority)[::-1][:5]
+    print(f"\nQuery 0 - Top 5 videos (True Majority Voting):")
+    for rank, video_idx in enumerate(top5_indices_majority, 1):
+        print(f"  Rank {rank}: Video {video_idx:3d} (score: {query_0_scores_majority[video_idx]:.4f})")
+    
+    # Show voting details for top-1 video
+    print(f"\nVoting details for Query 0, Top-1 Video {top5_indices_majority[0]}:")
+    top1_vid = top5_indices_majority[0]
+    for k_idx in range(k_plus_1):
+        top1_of_variant = np.argmax(sim_matrices[k_idx, 0, :])
+        voted_for_top1 = "✓" if top1_of_variant == top1_vid else "✗"
+        variant_name = "Original" if k_idx == 0 else f"Enriched{k_idx}"
+        print(f"  {variant_name}: top-1 = Video {top1_of_variant} {voted_for_top1}")
+    
     # Compare strategies
     print("\n" + "="*70)
-    print("COMPARISON")
+    print("COMPARISON BETWEEN ALL STRATEGIES")
     print("="*70)
     
-    print(f"\nDifference between strategies:")
-    diff = np.abs(final_sim_voting - final_sim_avg)
-    print(f"  Mean absolute difference: {diff.mean():.4f}")
-    print(f"  Max absolute difference: {diff.max():.4f}")
+    print(f"\nStrategy 1 (Weighted RRF) vs Strategy 2 (Average):")
+    diff_rrf_avg = np.abs(final_sim_rrf - final_sim_avg)
+    print(f"  Mean absolute difference: {diff_rrf_avg.mean():.4f}")
+    print(f"  Max absolute difference: {diff_rrf_avg.max():.4f}")
+    
+    print(f"\nStrategy 1 (Weighted RRF) vs Strategy 3 (True Majority Voting):")
+    diff_rrf_maj = np.abs(final_sim_rrf - final_sim_majority)
+    print(f"  Mean absolute difference: {diff_rrf_maj.mean():.4f}")
+    print(f"  Max absolute difference: {diff_rrf_maj.max():.4f}")
+    
+    print(f"\nStrategy 2 (Average) vs Strategy 3 (True Majority Voting):")
+    diff_avg_maj = np.abs(final_sim_avg - final_sim_majority)
+    print(f"  Mean absolute difference: {diff_avg_maj.mean():.4f}")
+    print(f"  Max absolute difference: {diff_avg_maj.max():.4f}")
     
     # Agreement on top-1
-    agreement_count = 0
-    for q_idx in range(n_queries):
-        top1_voting = np.argmax(final_sim_voting[q_idx])
-        top1_avg = np.argmax(final_sim_avg[q_idx])
-        if top1_voting == top1_avg:
-            agreement_count += 1
+    print(f"\nTop-1 agreement across strategies:")
+    agreement_rrf_avg = 0
+    agreement_rrf_maj = 0
+    agreement_avg_maj = 0
     
-    agreement_rate = 100.0 * agreement_count / n_queries
-    print(f"\nTop-1 agreement: {agreement_count}/{n_queries} ({agreement_rate:.1f}%)")
+    for q_idx in range(n_queries):
+        top1_rrf = np.argmax(final_sim_rrf[q_idx])
+        top1_avg = np.argmax(final_sim_avg[q_idx])
+        top1_maj = np.argmax(final_sim_majority[q_idx])
+        
+        if top1_rrf == top1_avg:
+            agreement_rrf_avg += 1
+        if top1_rrf == top1_maj:
+            agreement_rrf_maj += 1
+        if top1_avg == top1_maj:
+            agreement_avg_maj += 1
+    
+    print(f"  RRF vs Average: {agreement_rrf_avg}/{n_queries} ({100.0*agreement_rrf_avg/n_queries:.1f}%)")
+    print(f"  RRF vs Majority: {agreement_rrf_maj}/{n_queries} ({100.0*agreement_rrf_maj/n_queries:.1f}%)")
+    print(f"  Average vs Majority: {agreement_avg_maj}/{n_queries} ({100.0*agreement_avg_maj/n_queries:.1f}%)")
     
     print("\n" + "="*70)
     print("TEST COMPLETED SUCCESSFULLY!")
