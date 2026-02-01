@@ -70,73 +70,105 @@ class Aggregator:
     
     def voting_aggregation(self, sim_matrices):
         """
-        Majority Voting aggregation using inverse rank scores.
+        Improved Majority Voting aggregation using Weighted Reciprocal Rank Fusion (RRF).
+        
+        Key Improvements over naive 1/rank:
+        1. Weighted voting: Original query has higher weight than enriched queries
+        2. Smoothing constant k: Reduces harshness of pure 1/rank formula
+        3. No normalization: Preserves relative magnitudes across queries
         
         Process:
-        1. For each similarity matrix, convert to rankings
-        2. Compute inverse rank score for each video
-        3. Sum scores across all queries
-        4. Create final similarity matrix based on aggregated scores
+        1. Assign weights: Original query = 1.0, Enriched queries = 0.4
+        2. For each similarity matrix, convert to rankings (0-based)
+        3. Apply weighted RRF formula: w * (1 / (k + rank + 1))
+        4. Sum weighted scores across all query variants
         
-        Formula for each video v across all queries:
-            Score(v) = Σ (1 / Rank_i(v))
-        where Rank_i(v) is the rank of video v in the i-th query's ranking
+        Formula:
+            Score(q, v) = Σ_i [ w_i * (1 / (k + Rank_i(q, v) + 1)) ]
+        where:
+            w_i = weight of i-th query variant (original=1.0, enriched=0.4)
+            k = smoothing constant (1.0)
+            Rank_i(q, v) = 0-based rank of video v for query q in variant i
+        
+        Why this works:
+        - Weighted: Original query (ground truth) has 2.5x influence vs enriched
+        - Smoothing k=1.0: Rank 1→0.5, Rank 2→0.33 (33% drop vs 50% in pure 1/rank)
+        - No normalization: Fair comparison across different queries
+        
+        Example (k=1.0, weights=[1.0, 0.4, 0.4]):
+            Video A (correct):
+                Original: Rank 0 → 1.0 * 1/(1+0+1) = 0.50
+                Enriched1: Rank 2 → 0.4 * 1/(1+2+1) = 0.10
+                Enriched2: Rank 2 → 0.4 * 1/(1+2+1) = 0.10
+                Total: 0.70
+            
+            Video B (incorrect):
+                Original: Rank 1 → 1.0 * 1/(1+1+1) = 0.33
+                Enriched1: Rank 0 → 0.4 * 1/(1+0+1) = 0.20
+                Enriched2: Rank 1 → 0.4 * 1/(1+1+1) = 0.13
+                Total: 0.66
+            
+            → Video A wins! Original query's signal is preserved.
         
         Args:
             sim_matrices (np.ndarray): Shape (k+1, n_queries, n_videos)
+                                      k+1 similarity matrices from query variants
         
         Returns:
-            np.ndarray: Aggregated similarity matrix based on voting scores,
-                       shape (n_queries, n_videos)
+            np.ndarray: Aggregated similarity matrix, shape (n_queries, n_videos)
         """
         k_plus_1, n_queries, n_videos = sim_matrices.shape
         
-        # Initialize aggregated similarity matrix
-        final_sim = np.zeros((n_queries, n_videos))
+        # ---------------------------------------------------------
+        # IMPROVED AGGREGATION LOGIC (Weighted RRF)
+        # ---------------------------------------------------------
         
-        # Process each query independently
-        for q_idx in range(n_queries):
-            # Collect similarity scores for this query from all k+1 retrieval runs
-            query_sims = sim_matrices[:, q_idx, :]  # (k+1, n_videos)
-            
-            # Initialize voting scores for each video
-            video_scores = np.zeros(n_videos)
-            
-            # For each retrieval run (original + k enriched queries)
-            for k_idx in range(k_plus_1):
-                # Get similarity scores for this specific query-retrieval pair
-                sim_scores = query_sims[k_idx]  # (n_videos,)
-                
-                # Convert to rankings: higher similarity = better rank (lower rank number)
-                # argsort gives indices that would sort the array
-                # [::-1] reverses to get descending order (best first)
-                ranking = np.argsort(sim_scores)[::-1]
-                
-                # Create rank array: rank[video_idx] = rank of that video (1-indexed)
-                ranks = np.zeros(n_videos, dtype=float)
-                for rank_position, video_idx in enumerate(ranking):
-                    ranks[video_idx] = rank_position + 1  # 1-indexed rank
-                
-                # Compute inverse rank scores: 1 / rank
-                inverse_ranks = 1.0 / ranks
-                
-                # Accumulate scores
-                video_scores += inverse_ranks
-            
-            # Normalize scores to [0, 1] for similarity compatibility
-            if video_scores.max() > 0:
-                video_scores = video_scores / video_scores.max()
-            
-            # Assign aggregated scores as final similarity for this query
-            final_sim[q_idx, :] = video_scores
+        # 1. Configure weights for query variants
+        # Original query (index 0) is most important
+        # Enriched queries (index > 0) provide supporting evidence
+        weights = [1.0] + [0.4] * (k_plus_1 - 1)
         
-        return final_sim
+        # 2. Smoothing constant for RRF
+        # k=1.0 provides good balance:
+        #   - Rank 1: 1/(1+1) = 0.50
+        #   - Rank 2: 1/(1+2) = 0.33 (33% drop, gentler than 50%)
+        #   - Rank 10: 1/(1+10) = 0.09
+        # Smaller k → steeper curve (better R@1)
+        # Larger k → flatter curve (better R@5, R@10)
+        k_smooth = 1.0
+        
+        # Initialize final score matrix
+        final_score_matrix = np.zeros((n_queries, n_videos))
+        
+        # 3. Process each query variant with its weight
+        for idx, sim_matrix in enumerate(sim_matrices):
+            w = weights[idx]
+            
+            # Get 0-based ranks for each query-video pair
+            # argsort(-sim_matrix, axis=1): sort descending (highest sim first)
+            # argsort again: convert sorted indices to ranks (0-based)
+            # Result: ranks[i, j] = rank of video j for query i (0=best)
+            ranks = np.argsort(np.argsort(-sim_matrix, axis=1), axis=1)
+            
+            # Apply weighted RRF formula: w * (1 / (k + rank + 1))
+            # rank + 1: convert 0-based to 1-based for formula
+            score = w * (1.0 / (k_smooth + ranks + 1))
+            
+            # Accumulate weighted scores
+            final_score_matrix += score
+        
+        # 4. No normalization needed
+        # compute_metrics() only cares about relative ranking order,
+        # not absolute score magnitudes. Normalization can introduce bias
+        # across different queries.
+        
+        return final_score_matrix
 
 
 def test_aggregator():
-    """Test the Aggregator class with dummy data."""
+    """Test the Aggregator class with dummy data and verify weighted RRF logic."""
     print("="*70)
-    print("TESTING AGGREGATOR")
+    print("TESTING IMPROVED AGGREGATOR (Weighted RRF)")
     print("="*70)
     
     np.random.seed(42)
@@ -154,10 +186,12 @@ def test_aggregator():
     print(f"  - {k_plus_1} retrieval runs (1 original + {k_plus_1-1} enriched)")
     print(f"  - {n_queries} test queries")
     print(f"  - {n_videos} candidate videos")
+    print(f"\nWeights: [1.0 (original), 0.4 (enriched1), 0.4 (enriched2)]")
+    print(f"Smoothing constant k: 1.0")
     
-    # Test Strategy 1: Majority Voting
+    # Test Strategy 1: Weighted RRF Voting
     print("\n" + "-"*70)
-    print("Testing Strategy 1: Majority Voting")
+    print("Testing Strategy 1: Weighted RRF Voting")
     print("-"*70)
     
     aggregator_voting = Aggregator(strategy=1)
@@ -169,9 +203,20 @@ def test_aggregator():
     # Show top-5 videos for first query
     query_0_scores = final_sim_voting[0]
     top5_indices = np.argsort(query_0_scores)[::-1][:5]
-    print(f"\nQuery 0 - Top 5 videos (Voting):")
+    print(f"\nQuery 0 - Top 5 videos (Weighted RRF):")
     for rank, video_idx in enumerate(top5_indices, 1):
         print(f"  Rank {rank}: Video {video_idx:3d} (score: {query_0_scores[video_idx]:.4f})")
+    
+    # Verify weighted contribution
+    print(f"\nVerifying weighted RRF formula for Query 0, Video {top5_indices[0]}:")
+    vid_idx = top5_indices[0]
+    for k_idx in range(k_plus_1):
+        sim = sim_matrices[k_idx, 0, vid_idx]
+        rank = np.sum(sim_matrices[k_idx, 0, :] > sim)  # 0-based rank
+        weight = 1.0 if k_idx == 0 else 0.4
+        contribution = weight * (1.0 / (1.0 + rank + 1))
+        variant_name = "Original" if k_idx == 0 else f"Enriched{k_idx}"
+        print(f"  {variant_name}: rank={rank}, weight={weight:.1f}, contribution={contribution:.4f}")
     
     # Test Strategy 2: Average Similarity
     print("\n" + "-"*70)

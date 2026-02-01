@@ -911,9 +911,53 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
         else:
             return R1
 
+def _tokenize_text(sentence, tokenizer, max_words, SPECIAL_TOKEN, device):
+    """
+    Helper function to tokenize text (avoid code duplication).
+    Reuses the same logic as dataloader._get_text().
+    
+    Args:
+        sentence (str): Input text
+        tokenizer: CLIP tokenizer
+        max_words (int): Maximum number of words
+        SPECIAL_TOKEN (dict): Special token dictionary
+        device: torch device
+        
+    Returns:
+        tuple: (input_ids_tensor, input_mask_tensor, segment_ids_tensor)
+    """
+    words = tokenizer.tokenize(sentence)
+    
+    # Add special tokens
+    words = [SPECIAL_TOKEN["CLS_TOKEN"]] + words
+    total_length_with_CLS = max_words - 1
+    if len(words) > total_length_with_CLS:
+        words = words[:total_length_with_CLS]
+    words = words + [SPECIAL_TOKEN["SEP_TOKEN"]]
+    
+    # Convert to IDs
+    input_ids = tokenizer.convert_tokens_to_ids(words)
+    input_mask = [1] * len(input_ids)
+    segment_ids = [0] * len(input_ids)
+    
+    # Padding
+    while len(input_ids) < max_words:
+        input_ids.append(0)
+        input_mask.append(0)
+        segment_ids.append(0)
+    
+    # Convert to tensors
+    input_ids_tensor = torch.tensor([input_ids]).to(device)
+    input_mask_tensor = torch.tensor([input_mask]).to(device)
+    segment_ids_tensor = torch.tensor([segment_ids]).to(device)
+    
+    return input_ids_tensor, input_mask_tensor, segment_ids_tensor
+
+
 def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
     """
     Enriched evaluation with FQS queries and aggregation strategies.
+    Supports both CLIPKG4Clip and TempMe modes.
     
     Pipeline:
     1. Read FQS CSV file (k+1 queries per video)
@@ -940,6 +984,8 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
     fqs_df = pd.read_csv(args.val_csv)
     logger.info("="*70)
     logger.info("ENRICHED EVALUATION WITH FQS QUERIES")
+    mode_name = "TempMe" if args.use_tempme else "CLIPKG4Clip"
+    logger.info(f"Mode: {mode_name}")
     logger.info(f"FQS CSV: {args.val_csv}")
     logger.info(f"Loaded {len(fqs_df)} rows from FQS CSV")
     
@@ -962,8 +1008,18 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
     
     logger.info(f"Grouped into {len(video_queries)} unique videos")
     
-    # Sort video IDs for consistent ordering
-    sorted_video_ids = sorted(video_queries.keys())
+    # CRITICAL: Preserve original video order from dataloader (for correct ground truth mapping)
+    # DO NOT use sorted() - it will break ground truth alignment!
+    all_video_ids_from_loader = test_dataloader.dataset.data['video_id'].values.tolist()
+    sorted_video_ids = []  # "sorted" here means order-preserved, not alphabetically sorted!
+    seen = set()
+    for vid in all_video_ids_from_loader:
+        if vid not in seen and vid in video_queries:
+            sorted_video_ids.append(vid)
+            seen.add(vid)
+    
+    # Debug: Log first 5 videos to verify order preservation
+    logger.info(f"First 5 unique videos (order-preserved): {sorted_video_ids[:5]}")
     
     # Verify each video has expected number of queries
     expected_k = args.fqs_k + 1
@@ -971,221 +1027,411 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
         logger.info(f"  Sample - {vid}: {len(video_queries[vid])} queries")
     
     model.eval()
-    tokenizer = ClipTokenizer()
     
-    # Define CLIP special tokens (MUST use exact same as dataloader)
-    SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
-                     "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
-    
-    with torch.no_grad():
-        # ========================================================
-        # Step 1: Extract video features for UNIQUE videos only
-        # ========================================================
-        logger.info("\nStep 1/4: Extracting video features for unique videos...")
+    # ========================================================================
+    # TempMe Mode: Use stage1_eval + AllGather + stage2_eval pipeline
+    # ========================================================================
+    if args.use_tempme:
+        logger.info("\nRunning TempMe enriched evaluation...")
         
-        # Get UNIQUE video IDs in order of first appearance
-        all_video_ids = test_dataloader.dataset.data['video_id'].values.tolist()
-        unique_video_ids = []
-        seen = set()
-        for vid in all_video_ids:
-            if vid not in seen:
-                unique_video_ids.append(vid)
-                seen.add(vid)
+        # Initialize allgather function
+        if AllGather is None:
+            raise RuntimeError("AllGather not available. Please check modules.until_module import.")
+        allgather = AllGather.apply
         
+        tokenizer = ClipTokenizer()
+        SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
+                         "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
+        
+        unique_video_ids = sorted_video_ids
         n_videos = len(unique_video_ids)
-        logger.info(f"Total rows in CSV: {len(all_video_ids)}")
-        logger.info(f"Unique videos to process: {n_videos}")
-        logger.info(f"First 3 unique video IDs: {unique_video_ids[:3]}")
-        
-        # Create video_id -> feature index mapping
         video_id_to_idx = {vid: idx for idx, vid in enumerate(unique_video_ids)}
         
-        # Extract features for unique videos only
-        batch_visual_output_list = []
-        batch_list_v = []
-        
-        processed_videos = 0
-        row_idx = 0  # Track current row index in CSV
-        seen = set()  # Reset seen set for duplicate detection during extraction
-        
-        for bid, batch in enumerate(test_dataloader):
-            batch = tuple(t.to(device) for t in batch)
-            input_ids, input_mask, segment_ids, video, video_mask = batch
+        with torch.no_grad():
+            # ========================================================
+            # Step 1: Extract video features for UNIQUE videos
+            # ========================================================
+            logger.info(f"\nStep 1/5: Extracting video features for {n_videos} unique videos (TempMe)...")
             
-            # batch contains multiple videos (batch_size_val)
-            batch_size = video.shape[0]
+            batch_video_feat_list = []
+            batch_mask_v_list = []
+            batch_video_ids = []
             
-            # Extract visual features for entire batch at once (same as eval_epoch)
-            visual_output = model.get_visual_output(video, video_mask)
+            processed_videos = 0
+            seen_videos = set()
             
-            # Process each video in the batch
-            for i in range(batch_size):
-                current_video_id = all_video_ids[row_idx]
-                row_idx += 1
+            for batch in tqdm(test_dataloader, desc="Extracting video features"):
+                batch = tuple(t.to(device) for t in batch)
+                text_ids, text_mask, video, video_mask, inds, idx = batch
                 
-                # Only keep if this is the FIRST occurrence of this video
-                if current_video_id in seen:
-                    continue  # Skip duplicate
+                batch_size = video.shape[0]
                 
-                # Mark as seen
-                seen.add(current_video_id)
+                # Extract video features using stage1_eval
+                _, video_feat = model.stage1_eval(text_ids, text_mask, video, video_mask, idx, shapes=None)
                 
-                # Extract single video features from batch
-                single_visual_output = visual_output[i:i+1]  # Keep batch dimension
-                single_video_mask = video_mask[i:i+1]
+                # Process each video in batch
+                for i in range(batch_size):
+                    # Get video_id from dataloader
+                    global_idx = idx[i].item()
+                    if global_idx < len(all_video_ids_from_loader):
+                        video_id = all_video_ids_from_loader[global_idx]
+                        
+                        # Only process unique videos
+                        if video_id in video_id_to_idx and video_id not in seen_videos:
+                            batch_video_feat_list.append(video_feat[i].unsqueeze(0))
+                            batch_mask_v_list.append(video_mask[i].unsqueeze(0))
+                            batch_video_ids.append(video_id_to_idx[video_id])
+                            seen_videos.add(video_id)
+                            processed_videos += 1
                 
-                batch_visual_output_list.append(single_visual_output)
-                batch_list_v.append((single_video_mask,))
-                processed_videos += 1
-                
-                if processed_videos % 100 == 0 or processed_videos == n_videos:
-                    print(f"Processed {processed_videos}/{n_videos} unique videos\r", end="")
-                
-                # Early stop if we've processed all unique videos
                 if processed_videos >= n_videos:
                     break
             
-            if processed_videos >= n_videos:
-                break
-        
-        print()  # New line
-        logger.info(f"Extracted features for {len(batch_visual_output_list)} unique videos")
-        
-        # ========================================================
-        # Step 2: Extract text features for k+1 queries/video
-        # Process queries in order of UNIQUE videos
-        # ========================================================
-        logger.info(f"\nStep 2/4: Extracting text features for {expected_k} queries/video...")
-        batch_sequence_output_list = []  # Will store text features for ALL queries
-        batch_list_t = []
-        
-        for vid_idx, video_id in enumerate(unique_video_ids):
-            if video_id not in video_queries:
-                logger.error(f"Video {video_id} not found in FQS CSV!")
-                continue
-                
-            queries = video_queries[video_id]
+            logger.info(f"Extracted features for {len(batch_video_feat_list)} unique videos")
             
-            # Sort queries by key: ret0, ret0_1, ret0_2, ...
-            queries = sorted(queries, key=lambda x: (
-                int(x['key'].replace('ret', '').split('_')[0]),
-                int(x['key'].replace('ret', '').split('_')[1]) if '_' in x['key'] else -1
-            ))
+            # ========================================================
+            # Step 2: Extract text features for k+1 queries/video
+            # ========================================================
+            logger.info(f"\nStep 2/5: Extracting text features for {expected_k} queries × {n_videos} videos (TempMe)...")
             
-            # Process each of the k+1 queries
-            for q_idx, query in enumerate(queries[:expected_k]):
-                sentence = query['sentence']
-                words = tokenizer.tokenize(sentence)
-                
-                # Use CLIP special tokens (SAME as dataloader)
-                words = [SPECIAL_TOKEN["CLS_TOKEN"]] + words
-                total_length_with_CLS = args.max_words - 1
-                if len(words) > total_length_with_CLS:
-                    words = words[:total_length_with_CLS]
-                words = words + [SPECIAL_TOKEN["SEP_TOKEN"]]
-                
-                input_ids = tokenizer.convert_tokens_to_ids(words)
-                input_mask = [1] * len(input_ids)
-                segment_ids = [0] * len(input_ids)
-                
-                # Padding
-                while len(input_ids) < args.max_words:
-                    input_ids.append(0)
-                    input_mask.append(0)
-                    segment_ids.append(0)
-                
-                input_ids_tensor = torch.tensor([input_ids]).to(device)
-                input_mask_tensor = torch.tensor([input_mask]).to(device)
-                segment_ids_tensor = torch.tensor([segment_ids]).to(device)
-                
-                # Extract text features
-                sequence_output = model.get_sequence_output(input_ids_tensor, segment_ids_tensor, input_mask_tensor)
-                batch_sequence_output_list.append(sequence_output)
-                batch_list_t.append((input_mask_tensor, segment_ids_tensor,))
+            batch_cls_list = []
+            batch_mask_t_list = []
+            batch_query_ids = []  # Track which video each query belongs to
             
-            if (vid_idx + 1) % 100 == 0:
-                logger.info(f"  Processed {vid_idx + 1}/{n_videos} videos")
-        
-        logger.info(f"Extracted {len(batch_sequence_output_list)} text features ({expected_k} queries × {n_videos} videos)")
-        
-        # ========================================================
-        # Step 3: Compute k+1 INDEPENDENT similarity matrices
-        # Using SAME approach as eval_epoch (reuse _run_on_single_gpu)
-        # ========================================================
-        logger.info(f"\nStep 3/4: Computing {expected_k} INDEPENDENT similarity matrices...")
-        
-        sim_matrices_list = []  # Will contain k+1 matrices, each (n_videos, n_videos)
-        
-        for k_idx in range(expected_k):
-            # Extract batch lists for this query type (every k+1-th element starting from k_idx)
-            k_batch_list_t = []
-            k_batch_sequence_output_list = []
-            
-            for vid_idx in range(n_videos):
-                global_idx = vid_idx * expected_k + k_idx
-                k_batch_sequence_output_list.append(batch_sequence_output_list[global_idx])
-                k_batch_list_t.append(batch_list_t[global_idx])
-            
-            # Compute similarity matrix using SAME method as eval_epoch
-            if n_gpu > 1:
-                # Multi-GPU: split and parallel compute (same as eval_epoch)
-                logger.info(f"  Query {k_idx+1}/{expected_k}: Using multi-GPU computation...")
-                device_ids = list(range(n_gpu))
-                batch_list_t_splits = []
-                batch_list_v_splits = []
-                batch_t_output_splits = []
-                batch_v_output_splits = []
-                bacth_len = len(k_batch_list_t)
-                split_len = (bacth_len + n_gpu - 1) // n_gpu
+            for vid_idx, video_id in enumerate(unique_video_ids):
+                if video_id not in video_queries:
+                    logger.warning(f"Video {video_id} not found in FQS CSV")
+                    continue
                 
-                for dev_id in device_ids:
-                    s_, e_ = dev_id * split_len, (dev_id + 1) * split_len
-                    if dev_id == 0:
-                        batch_list_t_splits.append(k_batch_list_t[s_:e_])
-                        batch_list_v_splits.append(batch_list_v)
-                        batch_t_output_splits.append(k_batch_sequence_output_list[s_:e_])
-                        batch_v_output_splits.append(batch_visual_output_list)
-                    else:
-                        devc = torch.device('cuda:{}'.format(str(dev_id)))
-                        devc_batch_list = [tuple(t.to(devc) for t in b) for b in k_batch_list_t[s_:e_]]
-                        batch_list_t_splits.append(devc_batch_list)
-                        devc_batch_list = [tuple(t.to(devc) for t in b) for b in batch_list_v]
-                        batch_list_v_splits.append(devc_batch_list)
-                        devc_batch_list = [b.to(devc) for b in k_batch_sequence_output_list[s_:e_]]
-                        batch_t_output_splits.append(devc_batch_list)
-                        devc_batch_list = [b.to(devc) for b in batch_visual_output_list]
-                        batch_v_output_splits.append(devc_batch_list)
+                queries = video_queries[video_id]
                 
-                parameters_tuple_list = [(batch_list_t_splits[dev_id], batch_list_v_splits[dev_id],
-                                          batch_t_output_splits[dev_id], batch_v_output_splits[dev_id]) for dev_id in device_ids]
-                parallel_outputs = parallel_apply(_run_on_single_gpu, model, parameters_tuple_list, device_ids)
-                k_sim_matrix = []
-                for idx in range(len(parallel_outputs)):
-                    k_sim_matrix += parallel_outputs[idx]
-                k_sim_matrix = np.concatenate(tuple(k_sim_matrix), axis=0)
+                # Sort queries by key
+                queries = sorted(queries, key=lambda x: (
+                    int(x['key'].replace('ret', '').split('_')[0]),
+                    int(x['key'].replace('ret', '').split('_')[1]) if '_' in x['key'] else -1
+                ))
+                
+                # Process each of the k+1 queries
+                for q_idx, query in enumerate(queries[:expected_k]):
+                    sentence = query['sentence']
+                    
+                    # Tokenize text
+                    input_ids, input_mask, segment_ids = _tokenize_text(
+                        sentence, tokenizer, args.max_words, SPECIAL_TOKEN, device
+                    )
+                    
+                    # Create dummy video (not used in stage1_eval for text)
+                    dummy_video = torch.zeros((1, args.max_frames, 3, 224, 224)).to(device)
+                    dummy_video_mask = torch.zeros((1, args.max_frames, 1)).to(device)
+                    dummy_idx = torch.tensor([0]).to(device)
+                    
+                    # Extract text features using stage1_eval
+                    cls_feat, _ = model.stage1_eval(input_ids, input_mask, dummy_video, dummy_video_mask, dummy_idx, shapes=None)
+                    
+                    batch_cls_list.append(cls_feat)
+                    batch_mask_t_list.append(input_mask)
+                    batch_query_ids.append(vid_idx)
+                
+                if (vid_idx + 1) % 100 == 0:
+                    logger.info(f"Processed {vid_idx + 1}/{n_videos} videos")
+            
+            logger.info(f"Extracted {len(batch_cls_list)} text features")
+            
+            # ========================================================
+            # Step 3: AllGather (if distributed training)
+            # ========================================================
+            if args.world_size > 1:
+                logger.info("\nStep 3/5: AllGather features from all processes...")
+                torch.distributed.barrier()
+                
+                # Gather video features
+                batch_video_ids_tensor = torch.tensor(batch_video_ids, dtype=torch.long, device=device)
+                batch_video_feat = torch.cat(batch_video_feat_list, dim=0)
+                batch_mask_v = torch.cat(batch_mask_v_list, dim=0)
+                
+                batch_video_ids_tensor = allgather(batch_video_ids_tensor, args)
+                batch_video_feat = allgather(batch_video_feat, args)
+                batch_mask_v = allgather(batch_mask_v, args)
+                
+                # Reorder video features
+                batch_video_feat[batch_video_ids_tensor] = batch_video_feat.clone()
+                batch_mask_v[batch_video_ids_tensor] = batch_mask_v.clone()
+                
+                # Truncate to actual size
+                batch_video_feat = batch_video_feat[:n_videos, ...]
+                batch_mask_v = batch_mask_v[:n_videos, ...]
+                
+                # Gather text features
+                batch_query_ids_tensor = torch.tensor(batch_query_ids, dtype=torch.long, device=device)
+                batch_cls = torch.cat(batch_cls_list, dim=0)
+                batch_mask_t = torch.cat(batch_mask_t_list, dim=0)
+                
+                batch_query_ids_tensor = allgather(batch_query_ids_tensor, args)
+                batch_cls = allgather(batch_cls, args)
+                batch_mask_t = allgather(batch_mask_t, args)
+                
+                # Reorder text features (not needed since we use sequential order)
+                # Truncate to actual size
+                batch_cls = batch_cls[:len(batch_cls_list), ...]
+                batch_mask_t = batch_mask_t[:len(batch_mask_t_list), ...]
+                
+                logger.info(f"AllGather complete: video {batch_video_feat.shape}, text {batch_cls.shape}")
             else:
-                # Single GPU (same as eval_epoch)
-                k_sim_matrix = _run_on_single_gpu(model, k_batch_list_t, batch_list_v, 
-                                                   k_batch_sequence_output_list, batch_visual_output_list)
-                k_sim_matrix = np.concatenate(tuple(k_sim_matrix), axis=0)
+                # Single GPU: just concatenate
+                batch_video_feat = torch.cat(batch_video_feat_list, dim=0)
+                batch_mask_v = torch.cat(batch_mask_v_list, dim=0)
+                batch_cls = torch.cat(batch_cls_list, dim=0)
+                batch_mask_t = torch.cat(batch_mask_t_list, dim=0)
             
-            sim_matrices_list.append(k_sim_matrix)
-            logger.info(f"  Query {k_idx+1}/{expected_k}: Computed similarity matrix shape {k_sim_matrix.shape}")
+            # ========================================================
+            # Step 4: Compute k+1 similarity matrices using stage2_eval
+            # ========================================================
+            logger.info(f"\nStep 4/5: Computing {expected_k} similarity matrices (TempMe)...")
+            
+            sim_matrices_list = []
+            mini_batch = args.batch_size_val
+            
+            for k_idx in range(expected_k):
+                # Extract text features for this query type (every k+1-th element)
+                k_batch_cls = batch_cls[k_idx::expected_k]
+                k_batch_mask_t = batch_mask_t[k_idx::expected_k]
+                
+                # Compute similarity matrix
+                sim_matrix = []
+                
+                k_batch_cls_split = torch.split(k_batch_cls, mini_batch)
+                k_batch_mask_t_split = torch.split(k_batch_mask_t, mini_batch)
+                batch_video_feat_split = torch.split(batch_video_feat, mini_batch)
+                batch_mask_v_split = torch.split(batch_mask_v, mini_batch)
+                
+                for cls, text_mask in zip(k_batch_cls_split, k_batch_mask_t_split):
+                    each_row = []
+                    for video_feat, video_mask in zip(batch_video_feat_split, batch_mask_v_split):
+                        # Use stage2_eval to compute similarity
+                        b1b2_logits = model.stage2_eval(cls, video_feat, text_mask, video_mask, shapes=None)
+                        b1b2_logits = b1b2_logits.cpu().detach().numpy()
+                        each_row.append(b1b2_logits)
+                    each_row = np.concatenate(tuple(each_row), axis=-1)
+                    sim_matrix.append(each_row)
+                
+                k_sim_matrix = np.concatenate(tuple(sim_matrix), axis=0)
+                sim_matrices_list.append(k_sim_matrix)
+                logger.info(f"  Query {k_idx+1}/{expected_k}: shape {k_sim_matrix.shape}")
+            
+            # ========================================================
+            # Step 5: Aggregate using selected strategy
+            # ========================================================
+            logger.info(f"\nStep 5/5: Aggregating using {strategy_name}...")
+            
+            aggregator = Aggregator(strategy=args.aggregation_strategy)
+            sim_matrices_array = np.stack(sim_matrices_list, axis=0)
+            logger.info(f"Stacked similarity matrices shape: {sim_matrices_array.shape}")
+            
+            final_sim_matrix = aggregator.aggregate(sim_matrices_array)
+            logger.info(f"Final aggregated similarity matrix shape: {final_sim_matrix.shape}")
+    
+    # ========================================================================
+    # CLIPKG4Clip Mode: Original implementation
+    # ========================================================================
+    else:
+        logger.info("\nRunning CLIPKG4Clip enriched evaluation...")
         
-        # Step 4: Aggregate using selected strategy
-        logger.info(f"\nStep 4/4: Aggregating using {strategy_name}...")
+        tokenizer = ClipTokenizer()
         
-        # Create Aggregator
-        aggregator = Aggregator(strategy=args.aggregation_strategy)
+        # Define CLIP special tokens (MUST use exact same as dataloader)
+        SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
+                         "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
         
-        # Stack into (k+1, n_videos, n_videos)
-        sim_matrices_array = np.stack(sim_matrices_list, axis=0)
-        logger.info(f"Stacked similarity matrices shape: {sim_matrices_array.shape}")
-        
-        # Aggregate
-        final_sim_matrix = aggregator.aggregate(sim_matrices_array)
-        
-        logger.info(f"Final aggregated similarity matrix shape: {final_sim_matrix.shape}")
+        with torch.no_grad():
+            # ========================================================
+            # Step 1: Extract video features for UNIQUE videos only
+            # ========================================================
+            logger.info("\nStep 1/4: Extracting video features for unique videos (CLIPKG4Clip)...")
+            
+            # Use sorted_video_ids (already computed earlier from all_video_ids_from_loader)
+            unique_video_ids = sorted_video_ids
+            n_videos = len(unique_video_ids)
+            logger.info(f"Total rows in CSV: {len(all_video_ids_from_loader)}")
+            logger.info(f"Unique videos to process: {n_videos}")
+            logger.info(f"First 3 unique video IDs: {unique_video_ids[:3]}")
+            
+            # Create video_id -> feature index mapping
+            video_id_to_idx = {vid: idx for idx, vid in enumerate(unique_video_ids)}
+            
+            # Extract features for unique videos only
+            batch_visual_output_list = []
+            batch_list_v = []
+            
+            processed_videos = 0
+            row_idx = 0  # Track current row index in CSV
+            seen = set()  # Reset seen set for duplicate detection during extraction
+            
+            for bid, batch in enumerate(test_dataloader):
+                batch = tuple(t.to(device) for t in batch)
+                input_ids, input_mask, segment_ids, video, video_mask = batch
+                
+                # batch contains multiple videos (batch_size_val)
+                batch_size = video.shape[0]
+                
+                # Extract visual features for entire batch at once (same as eval_epoch)
+                visual_output = model.get_visual_output(video, video_mask)
+                
+                # Process each video in the batch
+                for i in range(batch_size):
+                    current_video_id = all_video_ids_from_loader[row_idx]
+                    row_idx += 1
+                    
+                    # Only keep if this is the FIRST occurrence of this video
+                    if current_video_id in seen:
+                        continue  # Skip duplicate
+                    
+                    # Mark as seen
+                    seen.add(current_video_id)
+                    
+                    # Extract single video features from batch
+                    single_visual_output = visual_output[i:i+1]  # Keep batch dimension
+                    single_video_mask = video_mask[i:i+1]
+                    
+                    batch_visual_output_list.append(single_visual_output)
+                    batch_list_v.append((single_video_mask,))
+                    processed_videos += 1
+                    
+                    if processed_videos % 100 == 0 or processed_videos == n_videos:
+                        print(f"Processed {processed_videos}/{n_videos} unique videos\r", end="")
+                    
+                    # Early stop if we've processed all unique videos
+                    if processed_videos >= n_videos:
+                        break
+                
+                if processed_videos >= n_videos:
+                    break
+            
+            print()  # New line
+            logger.info(f"Extracted features for {len(batch_visual_output_list)} unique videos")
+            
+            # ========================================================
+            # Step 2: Extract text features for k+1 queries/video
+            # Process queries in order of UNIQUE videos
+            # ========================================================
+            logger.info(f"\nStep 2/4: Extracting text features for {expected_k} queries/video (CLIPKG4Clip)...")
+            batch_sequence_output_list = []  # Will store text features for ALL queries
+            batch_list_t = []
+            
+            for vid_idx, video_id in enumerate(unique_video_ids):
+                if video_id not in video_queries:
+                    logger.error(f"Video {video_id} not found in FQS CSV!")
+                    continue
+                    
+                queries = video_queries[video_id]
+                
+                # Sort queries by key: ret0, ret0_1, ret0_2, ...
+                queries = sorted(queries, key=lambda x: (
+                    int(x['key'].replace('ret', '').split('_')[0]),
+                    int(x['key'].replace('ret', '').split('_')[1]) if '_' in x['key'] else -1
+                ))
+                
+                # Process each of the k+1 queries
+                for q_idx, query in enumerate(queries[:expected_k]):
+                    sentence = query['sentence']
+                    words = tokenizer.tokenize(sentence)
+                    
+                    # Use CLIP special tokens (SAME as dataloader)
+                    words = [SPECIAL_TOKEN["CLS_TOKEN"]] + words
+                    total_length_with_CLS = args.max_words - 1
+                    if len(words) > total_length_with_CLS:
+                        words = words[:total_length_with_CLS]
+                    words = words + [SPECIAL_TOKEN["SEP_TOKEN"]]
+                    
+                    input_ids = tokenizer.convert_tokens_to_ids(words)
+                    input_mask = [1] * len(input_ids)
+                    segment_ids = [0] * len(input_ids)
+                    
+                    # Padding
+                    while len(input_ids) < args.max_words:
+                        input_ids.append(0)
+                        input_mask.append(0)
+                        segment_ids.append(0)
+                    
+                    input_ids_tensor = torch.tensor([input_ids]).to(device)
+                    input_mask_tensor = torch.tensor([input_mask]).to(device)
+                    segment_ids_tensor = torch.tensor([segment_ids]).to(device)
+                    
+                    # Extract text features
+                    sequence_output = model.get_sequence_output(input_ids_tensor, segment_ids_tensor, input_mask_tensor)
+                    batch_sequence_output_list.append(sequence_output)
+                    batch_list_t.append((input_mask_tensor, segment_ids_tensor,))
+                
+                if (vid_idx + 1) % 100 == 0:
+                    logger.info(f"  Processed {vid_idx + 1}/{n_videos} videos")
+            
+            logger.info(f"Extracted {len(batch_sequence_output_list)} text features ({expected_k} queries × {n_videos} videos)")
+            
+            # ========================================================
+            # Step 3: Compute k+1 INDEPENDENT similarity matrices
+            # Using SAME approach as eval_epoch (reuse _run_on_single_gpu)
+            # ========================================================
+            logger.info(f"\nStep 3/4: Computing {expected_k} INDEPENDENT similarity matrices (CLIPKG4Clip)...")
+            
+            sim_matrices_list = []  # Will contain k+1 matrices, each (n_videos, n_videos)
+            
+            for k_idx in range(expected_k):
+                # Extract batch lists for this query type (every k+1-th element starting from k_idx)
+                k_batch_list_t = []
+                k_batch_sequence_output_list = []
+                
+                for vid_idx in range(n_videos):
+                    query_idx = vid_idx * expected_k + k_idx
+                    k_batch_sequence_output_list.append(batch_sequence_output_list[query_idx])
+                    k_batch_list_t.append(batch_list_t[query_idx])
+                
+                # Compute similarity matrix using SAME method as eval_epoch
+                if n_gpu > 1:
+                    device_ids = list(range(n_gpu))
+                    k_batch_list_t_splits = []
+                    k_batch_sequence_output_splits = []
+                    batch_list_v_splits = []
+                    batch_visual_output_splits = []
+                    batch_len = len(k_batch_list_t)
+                    split_len = (batch_len + n_gpu - 1) // n_gpu
+                    for dev_id in device_ids:
+                        s_ = dev_id * split_len
+                        e_ = min(s_ + split_len, batch_len)
+                        if s_ < batch_len:
+                            k_batch_list_t_splits.append(k_batch_list_t[s_:e_])
+                            k_batch_sequence_output_splits.append(k_batch_sequence_output_list[s_:e_])
+                            
+                            batch_list_v_splits.append(batch_list_v)
+                            batch_visual_output_splits.append(batch_visual_output_list)
+                    
+                    parameters_tuple_list = [(model, k_batch_list_t_splits[dev_id], batch_list_v_splits[dev_id],
+                                              k_batch_sequence_output_splits[dev_id], batch_visual_output_splits[dev_id]) for dev_id in device_ids]
+                    parallel_outputs = parallel_apply(_run_on_single_gpu, model, parameters_tuple_list, device_ids)
+                    k_sim_matrix = []
+                    for idx in range(len(parallel_outputs)):
+                        k_sim_matrix.extend(parallel_outputs[idx])
+                    k_sim_matrix = np.concatenate(tuple(k_sim_matrix), axis=0)
+                else:
+                    k_sim_matrix = _run_on_single_gpu(model, k_batch_list_t, batch_list_v, 
+                                                      k_batch_sequence_output_list, batch_visual_output_list)
+                    k_sim_matrix = np.concatenate(tuple(k_sim_matrix), axis=0)
+                
+                sim_matrices_list.append(k_sim_matrix)
+                logger.info(f"  Query {k_idx+1}/{expected_k}: Computed similarity matrix shape {k_sim_matrix.shape}")
+            
+            # Step 4: Aggregate using selected strategy
+            logger.info(f"\nStep 4/4: Aggregating using {strategy_name}...")
+            
+            # Create Aggregator
+            aggregator = Aggregator(strategy=args.aggregation_strategy)
+            
+            # Stack into (k+1, n_videos, n_videos)
+            sim_matrices_array = np.stack(sim_matrices_list, axis=0)
+            logger.info(f"Stacked similarity matrices shape: {sim_matrices_array.shape}")
+            
+            # Aggregate
+            final_sim_matrix = aggregator.aggregate(sim_matrices_array)
+            
+            logger.info(f"Final aggregated similarity matrix shape: {final_sim_matrix.shape}")
     
     # Compute metrics
     logger.info("\n" + "="*70)
