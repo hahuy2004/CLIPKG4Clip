@@ -989,8 +989,9 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
     logger.info(f"FQS CSV: {args.val_csv}")
     logger.info(f"Loaded {len(fqs_df)} rows from FQS CSV")
     
-    # Determine aggregation strategy
-    strategy_name = "Majority Voting" if args.aggregation_strategy == 1 else "Average Similarity"
+    # Determine aggregation strategy - get name from Aggregator class
+    aggregator_temp = Aggregator(strategy=args.aggregation_strategy)
+    strategy_name = aggregator_temp.strategy_name
     logger.info(f"Aggregation Strategy: {strategy_name}")
     logger.info(f"Expected queries per video: {args.fqs_k + 1}")
     logger.info("="*70)
