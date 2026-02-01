@@ -32,6 +32,9 @@ try:
     from .until_module import MSE, ArcCrossEn, KL
     TEMPME_AVAILABLE = True
 except ImportError:
+    print(f"DEBUG: Lỗi import thực sự là: {e}")  # <--- Thêm dòng này
+    import traceback
+    traceback.print_exc()         # <--- Thêm dòng này để in chi tiết lỗi
     TEMPME_AVAILABLE = False
     CLIP_TempMe = None
     tome_patch = None
