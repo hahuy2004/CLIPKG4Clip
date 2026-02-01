@@ -31,7 +31,7 @@ try:
     from .module_tome_utils import parse_r
     from .until_module import MSE, ArcCrossEn, KL
     TEMPME_AVAILABLE = True
-except ImportError:
+except ImportError as e:          # <--- Sửa dòng này
     print(f"DEBUG: Lỗi import thực sự là: {e}")  # <--- Thêm dòng này
     import traceback
     traceback.print_exc()         # <--- Thêm dòng này để in chi tiết lỗi
