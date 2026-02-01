@@ -20,16 +20,16 @@ import torch.nn.functional as F
 import numpy as np
 import copy
 
-from modules.until_module import PreTrainedModel, AllGather, AllGather2, CrossEn, CrossEn_TempMe, LayerNorm
-from modules.module_cross import CrossModel, CrossConfig, Transformer as TransformerClip
-from modules.module_clip import CLIP, convert_weights, _PT_NAME
+from .until_module import PreTrainedModel, AllGather, AllGather2, CrossEn, CrossEn_TempMe, LayerNorm
+from .module_cross import CrossModel, CrossConfig, Transformer as TransformerClip
+from .module_clip import CLIP, convert_weights, _PT_NAME
 
 # TempMe: Import ToMe (Token Merging) and additional loss functions
 try:
-    from modules.module_clip import CLIP_TempMe
-    from modules.module_tome_patch import apply_patch as tome_patch
-    from modules.module_tome_utils import parse_r
-    from modules.until_module import MSE, ArcCrossEn, KL
+    from .module_clip import CLIP_TempMe
+    from .module_tome_patch import apply_patch as tome_patch
+    from .module_tome_utils import parse_r
+    from .until_module import MSE, ArcCrossEn, KL
     TEMPME_AVAILABLE = True
 except ImportError:
     TEMPME_AVAILABLE = False

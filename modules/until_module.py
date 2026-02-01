@@ -26,7 +26,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import math
-from modules.until_config import PretrainedConfig
+from .until_config import PretrainedConfig
 
 logger = logging.getLogger(__name__)
 

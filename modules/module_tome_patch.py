@@ -13,8 +13,8 @@ from typing import Tuple, Union, List
 
 import torch
 import torch.nn.functional as F
-from modules.module_clip import Attention, ResidualAttentionBlock, CLIP
-from modules.module_tome_merge import bipartite_soft_matching, merge_source, merge_wavg
+from .module_clip import Attention, ResidualAttentionBlock, CLIP
+from .module_tome_merge import bipartite_soft_matching, merge_source, merge_wavg
 import logging
 
 logger = logging.getLogger(__name__)
