@@ -1608,11 +1608,20 @@ def main():
         use_enriched_training = False
         
         # For MSRVTT: use enriched_data_path
-        if args.datatype == "msrvtt" and args.enriched_data_path is not None and os.path.exists(args.enriched_data_path):
-            use_enriched_training = True
+        if args.datatype == "msrvtt" and args.enriched_data_path is not None:
+            if os.path.exists(args.enriched_data_path):
+                use_enriched_training = True
+                if args.local_rank == 0:
+                    logger.info(f"[ENRICHED] Found enriched data at: {args.enriched_data_path}")
+            else:
+                if args.local_rank == 0:
+                    logger.warning(f"[ENRICHED] Enriched data path specified but NOT FOUND: {args.enriched_data_path}")
+                    logger.warning(f"[ENRICHED] Skipping enriched training and proceeding with original data only.")
         # For MSVD: use enriched flag
         elif args.datatype == "msvd" and args.enriched == "yes":
             use_enriched_training = True
+            if args.local_rank == 0:
+                logger.info(f"[ENRICHED] Using enriched data for MSVD (enriched={args.enriched})")
         
         if use_enriched_training:
             if args.local_rank == 0:
