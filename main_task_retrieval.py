@@ -452,15 +452,25 @@ def save_model(epoch, args, model, optimizer, tr_loss, type_name=""):
     return output_model_file
 
 def load_model(epoch, args, n_gpu, device, model_file=None):
+    """Load model from checkpoint. Supports both CLIP4Clip and TempMe (VTRModel) modes."""
     if model_file is None or len(model_file) == 0:
         model_file = os.path.join(args.output_dir, "pytorch_model.bin.{}".format(epoch))
     if os.path.exists(model_file):
         model_state_dict = torch.load(model_file, map_location='cpu')
         if args.local_rank == 0:
             logger.info("Model loaded from %s", model_file)
-        # Prepare model
-        cache_dir = args.cache_dir if args.cache_dir else os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed')
-        model = CLIP4Clip.from_pretrained(args.cross_model, cache_dir=cache_dir, state_dict=model_state_dict, task_config=args)
+        
+        # Create model based on mode
+        if args.use_tempme:
+            # TempMe mode: Create VTRModel and load checkpoint
+            logger.info("Loading VTRModel from checkpoint (TempMe mode)...")
+            model = VTRModel(args)
+            model.load_state_dict(model_state_dict, strict=False)
+        else:
+            # CLIPKG4Clip mode: Use original CLIP4Clip
+            logger.info("Loading CLIP4Clip from checkpoint...")
+            cache_dir = args.cache_dir if args.cache_dir else os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed')
+            model = CLIP4Clip.from_pretrained(args.cross_model, cache_dir=cache_dir, state_dict=model_state_dict, task_config=args)
 
         model.to(device)
     else:
@@ -1705,8 +1715,28 @@ def main():
                 if early_stop:
                     break
             
-            # Use the last enriched checkpoint for next stage
+            # Use the LAST enriched checkpoint for next stage (warm-up completed)
             enriched_checkpoint = last_enriched_model_file
+            
+            if args.local_rank == 0:
+                logger.info("[ENRICHED] Training completed. Last checkpoint: %s", enriched_checkpoint)
+            
+            # Evaluate on validation set after STAGE 1 training
+            if args.local_rank == 0:
+                logger.info("="*50)
+                logger.info("STAGE 1 EVALUATION: Evaluating enriched model")
+                logger.info("="*50)
+            
+            if val_dataloader is not None:
+                R1_enriched = eval_epoch(args, model, val_dataloader, device, n_gpu)
+                if args.local_rank == 0:
+                    logger.info("[ENRICHED] Validation R@1: %.2f", R1_enriched)
+            else:
+                if args.local_rank == 0:
+                    logger.info("[ENRICHED] No validation dataloader available, skipping evaluation")
+            
+            if args.local_rank == 0:
+                logger.info("="*50)
             
             # Restore original parameters for STAGE 2 training
             args.data_path = original_data_path
@@ -1741,13 +1771,21 @@ def main():
         num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
                                         / args.gradient_accumulation_steps) * args.epochs
 
-        # If we have enriched checkpoint, load it as init model
-        if enriched_checkpoint is not None:
+        # If we have enriched checkpoint, load weights into EXISTING model
+        if enriched_checkpoint is not None and enriched_checkpoint != "None":
             if args.local_rank == 0:
-                logger.info("Loading enriched checkpoint: %s", enriched_checkpoint)
-            # Load the enriched model
-            model = load_model(-1, args, n_gpu, device, model_file=enriched_checkpoint)
+                logger.info("Loading enriched checkpoint weights: %s", enriched_checkpoint)
+            # Load checkpoint into existing model (preserves model architecture from STAGE 1)
+            checkpoint_state_dict = torch.load(enriched_checkpoint, map_location='cpu')
+            # Model from STAGE 1 may already be wrapped in DDP, need to unwrap first
+            if hasattr(model, 'module'):
+                model.module.load_state_dict(checkpoint_state_dict, strict=False)
+            else:
+                model.load_state_dict(checkpoint_state_dict, strict=False)
+            if args.local_rank == 0:
+                logger.info("Successfully loaded enriched weights into existing model")
         
+        # Reinitialize optimizer and scheduler for STAGE 2 (fresh training state)
         coef_lr = args.coef_lr
         optimizer, scheduler, model = prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, args.local_rank, coef_lr=coef_lr)
 
