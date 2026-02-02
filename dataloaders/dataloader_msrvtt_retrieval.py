@@ -648,7 +648,9 @@ class MSRVTTDataset_TempMe(RetrievalDataset_TempMe):
     """TempMe-style MSRVTT dataset with Decord and advanced augmentation."""
 
     def __init__(self, subset, anno_path, video_path, tokenizer, max_words=32,
-                 max_frames=12, video_framerate=1, image_resolution=224, mode='all', config=None):
+                 max_frames=12, video_framerate=1, image_resolution=224, mode='all', config=None,
+                 anno_json_name='MSRVTT_data.json'):
+        self.anno_json_name = anno_json_name  # Store before calling super()
         super(MSRVTTDataset_TempMe, self).__init__(subset, anno_path, video_path, tokenizer, max_words,
                                                    max_frames, video_framerate, image_resolution, mode, config=config)
 
@@ -671,14 +673,14 @@ class MSRVTTDataset_TempMe(RetrievalDataset_TempMe):
         video_dict = OrderedDict()
         sentences_dict = OrderedDict()
         if subset == 'train':
-            anno_path = join(self.anno_path, 'MSRVTT_data.json')
+            anno_path = join(self.anno_path, self.anno_json_name)
             data = json.load(open(anno_path, 'r'))
             for itm in data['sentences']:
                 if itm['video_id'] in video_id_list:
                     sentences_dict[len(sentences_dict)] = (itm['video_id'], (itm['caption'], None, None))
                     video_dict[itm['video_id']] = join(self.video_path, "{}.mp4".format(itm['video_id']))
         elif subset == 'train_test':
-            anno_path = join(self.anno_path, 'MSRVTT_data.json')
+            anno_path = join(self.anno_path, self.anno_json_name)
             data = json.load(open(anno_path, 'r'))
             used = []
             for itm in data['sentences']:

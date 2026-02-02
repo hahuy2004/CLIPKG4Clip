@@ -31,6 +31,7 @@ def dataloader_msrvtt_train(args, tokenizer):
     if use_tempme:
         print("[dataloader_msrvtt_train] Using TempMe-style dataloader with Decord + Advanced Augmentation")
         # TempMe-style dataloader (uses anno_path + video_path)
+        anno_json_name = getattr(args, 'anno_json_name', 'MSRVTT_data.json')
         msrvtt_dataset = MSRVTTDataset_TempMe(
             subset='train',
             anno_path=args.anno_path,
@@ -40,7 +41,8 @@ def dataloader_msrvtt_train(args, tokenizer):
             max_frames=args.max_frames,
             video_framerate=args.video_framerate,
             # image_resolution=getattr(args, 'image_resolution', 224),
-            config=args
+            config=args,
+            anno_json_name=anno_json_name
         )
 
         try:

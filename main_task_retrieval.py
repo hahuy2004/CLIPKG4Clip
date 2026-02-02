@@ -1643,6 +1643,7 @@ def main():
             # Save original values for restoration after enriched training
             original_data_path = args.data_path
             original_anno_path = args.anno_path if hasattr(args, 'anno_path') else None
+            original_anno_json_name = getattr(args, 'anno_json_name', 'MSRVTT_data.json')
             original_epochs = args.epochs
             original_max_steps = args.max_steps
             original_enriched = None
@@ -1650,13 +1651,18 @@ def main():
             if args.datatype == "msrvtt":
                 # TempMe vs CLIPKG4Clip use different data loading mechanisms
                 if args.use_tempme:
-                    # TempMe mode: Uses anno_path (annotation folder)
-                    # enriched_data_path should point to enriched annotation folder
-                    args.anno_path = args.enriched_data_path
+                    # TempMe mode: Uses anno_json_name parameter to specify JSON filename
+                    # Keep anno_path as folder, change only JSON filename
+                    # Extract filename from enriched_data_path if it's a full path
+                    if os.path.isabs(args.enriched_data_path):
+                        args.anno_json_name = os.path.basename(args.enriched_data_path)
+                    else:
+                        # If relative path or just filename, use as-is
+                        args.anno_json_name = args.enriched_data_path
                     if args.local_rank == 0:
-                        logger.info("[TempMe] Switched anno_path to: %s", args.anno_path)
+                        logger.info("[TempMe] Switched anno_json_name to: %s", args.anno_json_name)
                 else:
-                    # CLIPKG4Clip mode: Uses data_path (pickle file)
+                    # CLIPKG4Clip mode: Uses data_path (direct path to pickle file)
                     # enriched_data_path should point to enriched pickle file
                     args.data_path = args.enriched_data_path
                     if args.local_rank == 0:
@@ -1712,11 +1718,11 @@ def main():
             args.max_steps = original_max_steps
             
             # Restore mode-specific parameters
-            if args.use_tempme and original_anno_path is not None:
-                # TempMe mode: Restore original anno_path
-                args.anno_path = original_anno_path
+            if args.use_tempme:
+                # TempMe mode: Restore original anno_json_name
+                args.anno_json_name = original_anno_json_name
                 if args.local_rank == 0:
-                    logger.info("[TempMe] Restored anno_path to: %s", args.anno_path)
+                    logger.info("[TempMe] Restored anno_json_name to: %s", args.anno_json_name)
             
             if args.datatype == "msvd" and original_enriched is not None:
                 args.enriched = "no"  # Switch to raw captions for MSVD

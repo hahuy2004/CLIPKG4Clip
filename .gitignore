@@ -88,3 +88,5 @@ verify_video_order.py
 datasets/MSRVTT/MSRVTT_Videos.zip
 datasets/MSRVTT/segments_split.zip
 datasets/MSVD/segments.zip
+
+training_commands_mode_tempme.md
