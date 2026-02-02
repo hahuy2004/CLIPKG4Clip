@@ -1653,12 +1653,8 @@ def main():
                 if args.use_tempme:
                     # TempMe mode: Uses anno_json_name parameter to specify JSON filename
                     # Keep anno_path as folder, change only JSON filename
-                    # Extract filename from enriched_data_path if it's a full path
-                    if os.path.isabs(args.enriched_data_path):
-                        args.anno_json_name = os.path.basename(args.enriched_data_path)
-                    else:
-                        # If relative path or just filename, use as-is
-                        args.anno_json_name = args.enriched_data_path
+                    # Always extract just the filename to avoid path duplication
+                    args.anno_json_name = os.path.basename(args.enriched_data_path)
                     if args.local_rank == 0:
                         logger.info("[TempMe] Switched anno_json_name to: %s", args.anno_json_name)
                 else:
