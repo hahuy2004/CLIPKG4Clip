@@ -13,14 +13,14 @@ from typing import Tuple, Union, List
 
 import torch
 import torch.nn.functional as F
-from .module_clip import Attention_TempMe, ResidualAttentionBlock, CLIP
+from .module_clip import Attention_TempMe, ResidualAttentionBlock_TempMe, CLIP_TempMe
 from .module_tome_merge import bipartite_soft_matching, merge_source, merge_wavg
 import logging
 
 logger = logging.getLogger(__name__)
 
 ### modified from ToMe
-class ToMeBlock(ResidualAttentionBlock):
+class ToMeBlock(ResidualAttentionBlock_TempMe):
 
     def forward(self, x: torch.Tensor, M_frame_num: int = 1, M_token_num: List[int] = [2], frame_pos: int = 0) -> torch.Tensor:
         r_f = M_frame_num
@@ -130,13 +130,13 @@ class ToMeAttention(Attention_TempMe):
         return x, k.mean(1)
 
 def apply_patch(
-    model: CLIP, trace_source: bool = False, prop_attn: bool = True
+    model: CLIP_TempMe, trace_source: bool = False, prop_attn: bool = True
 ):
     """
-    Apply Token Merging patch to CLIP model.
+    Apply Token Merging patch to CLIP_TempMe model.
     
     Args:
-        model: CLIP model to patch
+        model: CLIP_TempMe model to patch
         trace_source: Whether to trace source tokens
         prop_attn: Whether to propagate attention
     """
@@ -151,7 +151,7 @@ def apply_patch(
     }
 
     for module in model.visual.transformer.modules():
-        if isinstance(module, ResidualAttentionBlock):
+        if isinstance(module, ResidualAttentionBlock_TempMe):
             module.__class__ = ToMeBlock
             module._tome_info = model._tome_info
         elif isinstance(module, Attention_TempMe):
