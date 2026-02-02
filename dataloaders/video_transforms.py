@@ -20,7 +20,7 @@ import numbers
 import PIL
 import torchvision
 
-import functional as FF
+from torchvision.transforms import functional as FF
 
 _pil_interpolation_to_str = {
     Image.NEAREST: "PIL.Image.NEAREST",
