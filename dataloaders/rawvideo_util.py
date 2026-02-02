@@ -11,7 +11,10 @@ try:
     import dataloaders.video_transforms as video_transforms
     from .random_erasing import RandomErasing
     TEMPME_MODULES_AVAILABLE = True
-except ImportError:
+except ImportError as e:          # <--- Sửa dòng này
+    print(f"DEBUG: Lỗi import thực sự là: {e}")  # <--- Thêm dòng này
+    import traceback
+    traceback.print_exc()         # <--- Thêm dòng này để in chi tiết lỗi
     TEMPME_MODULES_AVAILABLE = False
     print("[Warning] TempMe modules (video_transforms, random_erasing) not available.")
 

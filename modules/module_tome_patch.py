@@ -13,7 +13,7 @@ from typing import Tuple, Union, List
 
 import torch
 import torch.nn.functional as F
-from .module_clip import Attention, ResidualAttentionBlock, CLIP
+from .module_clip import Attention_TempMe, ResidualAttentionBlock, CLIP
 from .module_tome_merge import bipartite_soft_matching, merge_source, merge_wavg
 import logging
 
@@ -103,7 +103,7 @@ class ToMeBlock(ResidualAttentionBlock):
         
         return x
 
-class ToMeAttention(Attention):
+class ToMeAttention(Attention_TempMe):
 
     def forward(
         self, x: torch.Tensor, size: torch.Tensor = None
@@ -154,6 +154,6 @@ def apply_patch(
         if isinstance(module, ResidualAttentionBlock):
             module.__class__ = ToMeBlock
             module._tome_info = model._tome_info
-        elif isinstance(module, Attention):
+        elif isinstance(module, Attention_TempMe):
             module.__class__ = ToMeAttention
             module._tome_info = model._tome_info
