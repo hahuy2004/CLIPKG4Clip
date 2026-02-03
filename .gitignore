@@ -90,3 +90,5 @@ datasets/MSRVTT/segments_split.zip
 datasets/MSVD/segments.zip
 
 training_commands_mode_tempme.md
+
+datasets/MSVD/videos
