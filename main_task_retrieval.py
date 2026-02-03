@@ -1085,7 +1085,7 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
                 batch_size = video.shape[0]
                 
                 # Extract video features using stage1_eval
-                _, video_feat = model.stage1_eval(text_ids, text_mask, video, video_mask, idx, shapes=None)
+                _, video_feat = model.stage1_eval(text_ids, text_mask, video, video_mask, idx)
                 
                 # Process each video in batch
                 for i in range(batch_size):
@@ -1144,7 +1144,7 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
                     dummy_idx = torch.tensor([0]).to(device)
                     
                     # Extract text features using stage1_eval
-                    cls_feat, _ = model.stage1_eval(input_ids, input_mask, dummy_video, dummy_video_mask, dummy_idx, shapes=None)
+                    cls_feat, _ = model.stage1_eval(input_ids, input_mask, dummy_video, dummy_video_mask, dummy_idx)
                     
                     batch_cls_list.append(cls_feat)
                     batch_mask_t_list.append(input_mask)
@@ -1226,7 +1226,7 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
                     each_row = []
                     for video_feat, video_mask in zip(batch_video_feat_split, batch_mask_v_split):
                         # Use stage2_eval to compute similarity
-                        b1b2_logits = model.stage2_eval(cls, video_feat, text_mask, video_mask, shapes=None)
+                        b1b2_logits = model.stage2_eval(cls, video_feat, text_mask, video_mask)
                         b1b2_logits = b1b2_logits.cpu().detach().numpy()
                         each_row.append(b1b2_logits)
                     each_row = np.concatenate(tuple(each_row), axis=-1)
