@@ -1021,7 +1021,14 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
     
     # CRITICAL: Preserve original video order from dataloader (for correct ground truth mapping)
     # DO NOT use sorted() - it will break ground truth alignment!
-    all_video_ids_from_loader = test_dataloader.dataset.data['video_id'].values.tolist()
+    # Handle both CLIP4Clip and TempMe dataloader formats
+    if args.use_tempme:
+        # TempMe mode: sentences_dict format: {idx: (video_id, (caption, s, e))}
+        all_video_ids_from_loader = [v[0] for v in test_dataloader.dataset.sentences_dict.values()]
+    else:
+        # CLIP4Clip mode: data is pandas DataFrame
+        all_video_ids_from_loader = test_dataloader.dataset.data['video_id'].values.tolist()
+    
     sorted_video_ids = []  # "sorted" here means order-preserved, not alphabetically sorted!
     seen = set()
     for vid in all_video_ids_from_loader:
@@ -1825,11 +1832,31 @@ def main():
                 if best_score <= R1:
                     best_score = R1
                     best_output_model_file = output_model_file
+                    
+                    # TempMe mode: Save best checkpoint as best.pth
+                    if args.use_tempme:
+                        model_to_save = model.module if hasattr(model, 'module') else model
+                        best_pth_file = os.path.join(args.output_dir, "best.pth")
+                        torch.save(model_to_save.state_dict(), best_pth_file)
+                        logger.info("[TempMe] Best model also saved to: {}".format(best_pth_file))
+                
                 logger.info("[ORIGINAL] The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
             
             # Dừng training nếu đã đạt max_steps
             if early_stop:
                 break
+        
+        # After training completes: ensure best.pth exists for TempMe mode
+        if args.local_rank == 0 and args.use_tempme:
+            best_pth_file = os.path.join(args.output_dir, "best.pth")
+            if not os.path.exists(best_pth_file) and best_output_model_file != "None":
+                # If best.pth doesn't exist, copy from best checkpoint
+                logger.info("[TempMe] Creating best.pth from best checkpoint: {}".format(best_output_model_file))
+                model_state_dict = torch.load(best_output_model_file, map_location='cpu')
+                torch.save(model_state_dict, best_pth_file)
+                logger.info("[TempMe] Best checkpoint saved to: {}".format(best_pth_file))
+            elif os.path.exists(best_pth_file):
+                logger.info("[TempMe] Best checkpoint already exists at: {}".format(best_pth_file))
 
         ## Uncomment if want to test on the best checkpoint
         # if args.local_rank == 0:
