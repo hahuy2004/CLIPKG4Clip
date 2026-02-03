@@ -1089,10 +1089,10 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
                 
                 # Process each video in batch
                 for i in range(batch_size):
-                    # Get video_id from dataloader
+                    # Get video_id from sentences_dict using global_idx as key
                     global_idx = idx[i].item()
-                    if global_idx < len(all_video_ids_from_loader):
-                        video_id = all_video_ids_from_loader[global_idx]
+                    if global_idx in test_dataloader.dataset.sentences_dict:
+                        video_id = test_dataloader.dataset.sentences_dict[global_idx][0]
                         
                         # Only process unique videos
                         if video_id in video_id_to_idx and video_id not in seen_videos:
