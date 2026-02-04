@@ -1107,7 +1107,8 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
             
             for batch in tqdm(test_dataloader, desc="Extracting Video Features"):
                 batch = tuple(t.to(device) for t in batch)
-                text_ids, text_mask, video, video_mask, inds, idx = batch
+                # Unpack batch: inds = real index (0,1,2...), video_hash = hash(video_id)
+                text_ids, text_mask, video, video_mask, inds, video_hash = batch
                 
                 batch_size = video.shape[0]
                 
@@ -1117,7 +1118,7 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
                 
                 # Store unique video features
                 for i in range(batch_size):
-                    global_idx = idx[i].item()
+                    global_idx = inds[i].item()  # Use inds (real index), NOT video_hash
                     if global_idx in test_dataloader.dataset.sentences_dict:
                         video_id = test_dataloader.dataset.sentences_dict[global_idx][0]
                         
