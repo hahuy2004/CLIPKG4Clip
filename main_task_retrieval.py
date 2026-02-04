@@ -1097,9 +1097,9 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
         
         with torch.no_grad():
             # ========================================================
-            # PHASE 1: Extract VIDEO features (one per unique video from dataloader)
+            # Step 1: Extract VIDEO features (one per unique video from dataloader)
             # ========================================================
-            logger.info(f"\nPhase 1/3: Extracting VIDEO features for {n_videos} unique videos...")
+            logger.info(f"\nStep 1/3: Extracting VIDEO features for {n_videos} unique videos...")
             
             # Map: video_id -> {video_feat, video_mask}
             video_features_dict = {}
@@ -1141,9 +1141,9 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
             logger.info(f"Valid videos for evaluation: {len(valid_video_ids)}")
             
             # ========================================================
-            # PHASE 2: Extract TEXT features from CSV enriched sentences
+            # Step 2: Extract TEXT features from CSV enriched sentences
             # ========================================================
-            logger.info(f"\nPhase 2/3: Extracting TEXT features from CSV enriched sentences...")
+            logger.info(f"\nStep 2/3: Extracting TEXT features from CSV enriched sentences...")
             logger.info(f"Processing {expected_k} queries per video × {len(valid_video_ids)} videos...")
             
             # Organize text features by query position
@@ -1208,9 +1208,9 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
             logger.info(f"Text feature extraction complete!")
             
             # ========================================================
-            # PHASE 3: Compute similarity matrices for each query position
+            # Step 3: Compute similarity matrices for each query position
             # ========================================================
-            logger.info(f"\nPhase 3/3: Computing {expected_k} similarity matrices...")
+            logger.info(f"\nStep 3/3: Computing {expected_k} similarity matrices...")
             
             # Stack video features in order of valid_video_ids
             stacked_video_feats = torch.stack([video_features_dict[vid]['video_feat'] for vid in valid_video_ids], dim=0).squeeze(1).to(device)
