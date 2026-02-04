@@ -1249,10 +1249,10 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
             # Aggregate similarity matrices
             aggregator = Aggregator(strategy=args.aggregation_strategy)
             sim_matrices_array = np.stack(sim_matrices_list, axis=0)
-            logger.info(f"\nStacked matrices shape: {sim_matrices_array.shape}")
+            logger.info(f"\nStacked similarity matrices shape: {sim_matrices_array.shape}")
             
             final_sim_matrix = aggregator.aggregate(sim_matrices_array)
-            logger.info(f"Final aggregated matrix shape: {final_sim_matrix.shape}")
+            logger.info(f"Final aggregated similarity matrix shape: {final_sim_matrix.shape}")
     
     # ========================================================================
     # CLIPKG4Clip Mode: Original implementation
