@@ -1110,6 +1110,10 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
                 # Unpack batch: inds = real index (0,1,2...), video_hash = hash(video_id)
                 text_ids, text_mask, video, video_mask, inds, video_hash = batch
                 
+                # FIX: Ensure video has 7 dimensions (B, pair=1, T, bs=1, C, H, W) for stage1_eval
+                if len(video.shape) == 6:
+                    video = video.unsqueeze(1)  # Add pair dimension
+                
                 batch_size = video.shape[0]
                 
                 # Extract VIDEO features only (ignore text features from dataloader)
@@ -1183,9 +1187,10 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
                     )
                     
                     # Create dummy video input for stage1_eval (required by model signature)
+                    # CRITICAL: stage1_eval expects 7D: (batch, pair, bs, ts, channel, h, w)
                     curr_batch_size = text_ids_batch.shape[0]
                     dummy_video = torch.zeros(
-                        curr_batch_size, args.max_frames, 1, 3, 224, 224,
+                        curr_batch_size, 1, args.max_frames, 1, 3, 224, 224,
                         dtype=torch.float32, device=device
                     )
                     dummy_video_mask = torch.zeros(
