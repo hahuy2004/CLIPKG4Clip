@@ -93,3 +93,10 @@ training_commands_mode_tempme.md
 
 datasets/MSVD/videos
 datasets/MSRVTT/videos
+
+DANH_GIA_IMPLEMENTATION.md
+ENRICHED_EVAL_TEMPME_FIX.md
+test_enriched_logic.py
+check_csv.py
+comprehensive_check.py
+FINAL_VERDICT.md
