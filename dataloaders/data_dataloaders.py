@@ -9,6 +9,7 @@ from dataloaders.dataloader_didemo_retrieval import DiDeMo_DataLoader
 # Import TempMe-style dataloader (now unified in same file)
 try:
     from dataloaders.dataloader_msrvtt_retrieval import MSRVTTDataset_TempMe
+    from dataloaders.dataloader_msvd_retrieval import MSVDDataset_TempMe
     TEMPME_AVAILABLE = True
 except ImportError:
     TEMPME_AVAILABLE = False
@@ -206,55 +207,151 @@ def dataloader_msrvtt_train_test(args, tokenizer):
 
 
 def dataloader_msvd_train(args, tokenizer):
+    """
+    MSVD train dataloader with automatic mode selection.
+    
+    Args:
+        args: Configuration object with use_tempme flag
+        tokenizer: Text tokenizer
+        
+    Returns:
+        tuple: (dataloader, dataset_length, sampler)
+    """
+    # Check if using TempMe-style dataloader
+    use_tempme = hasattr(args, 'use_tempme') and args.use_tempme and TEMPME_AVAILABLE
+    
     # Check if we should use enriched captions
     use_enriched = hasattr(args, 'enriched') and args.enriched == 'yes'
     
-    msvd_dataset = MSVD_DataLoader(
-        subset="train",
-        data_path=args.data_path,
-        features_path=args.features_path,
-        max_words=args.max_words,
-        feature_framerate=args.feature_framerate,
-        tokenizer=tokenizer,
-        max_frames=args.max_frames,
-        frame_order=args.train_frame_order,
-        slice_framepos=args.slice_framepos,
-        use_enriched=use_enriched,
-    )
+    if use_tempme:
+        print("[dataloader_msvd_train] Using TempMe-style dataloader with Decord + Advanced Augmentation")
+        # TempMe-style dataloader (uses anno_path + video_path)
+        msvd_dataset = MSVDDataset_TempMe(
+            subset='train',
+            anno_path=args.anno_path,
+            video_path=args.video_path,
+            max_words=args.max_words,
+            tokenizer=tokenizer,
+            max_frames=args.max_frames,
+            video_framerate=args.video_framerate,
+            config=args,
+            use_enriched=use_enriched,
+        )
 
-    train_sampler = torch.utils.data.distributed.DistributedSampler(msvd_dataset)
-    dataloader = DataLoader(
-        msvd_dataset,
-        batch_size=args.batch_size // args.n_gpu,
-        num_workers=args.num_thread_reader,
-        pin_memory=False,
-        shuffle=(train_sampler is None),
-        sampler=train_sampler,
-        drop_last=True,
-    )
+        try:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(msvd_dataset)
+        except:
+            train_sampler = None  # cpu
+            
+        dataloader = DataLoader(
+            msvd_dataset,
+            batch_size=args.batch_size // args.world_size,
+            num_workers=args.workers,
+            pin_memory=False,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+            drop_last=True,
+        )
+    else:
+        print("[dataloader_msvd_train] Using original CLIPKG4Clip dataloader with OpenCV")
+        # Original CLIPKG4Clip dataloader
+        msvd_dataset = MSVD_DataLoader(
+            subset="train",
+            data_path=args.data_path,
+            features_path=args.features_path,
+            max_words=args.max_words,
+            feature_framerate=args.feature_framerate,
+            tokenizer=tokenizer,
+            max_frames=args.max_frames,
+            frame_order=args.train_frame_order,
+            slice_framepos=args.slice_framepos,
+            use_enriched=use_enriched,
+        )
+
+        try:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(msvd_dataset)
+        except:
+            train_sampler = None  # cpu
+
+        dataloader = DataLoader(
+            msvd_dataset,
+            batch_size=args.batch_size // args.n_gpu,
+            num_workers=args.num_thread_reader,
+            pin_memory=False,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+            drop_last=True,
+        )
 
     return dataloader, len(msvd_dataset), train_sampler
 
 def dataloader_msvd_test(args, tokenizer, subset="test"):
-    msvd_testset = MSVD_DataLoader(
-        subset=subset,
-        data_path=args.data_path,
-        features_path=args.features_path,
-        max_words=args.max_words,
-        feature_framerate=args.feature_framerate,
-        tokenizer=tokenizer,
-        max_frames=args.max_frames,
-        frame_order=args.eval_frame_order,
-        slice_framepos=args.slice_framepos,
-    )
-    dataloader_msrvtt = DataLoader(
-        msvd_testset,
-        batch_size=args.batch_size_val,
-        num_workers=args.num_thread_reader,
-        shuffle=False,
-        drop_last=False,
-    )
-    return dataloader_msrvtt, len(msvd_testset)
+    """
+    MSVD test/val dataloader with automatic mode selection.
+    
+    Args:
+        args: Configuration object with use_tempme flag
+        tokenizer: Text tokenizer
+        subset: 'test' or 'val'
+        
+    Returns:
+        tuple: (dataloader, dataset_length)
+    """
+    # Check if using TempMe-style dataloader
+    use_tempme = hasattr(args, 'use_tempme') and args.use_tempme and TEMPME_AVAILABLE
+    
+    if use_tempme:
+        print(f"[dataloader_msvd_test] Using TempMe-style dataloader with Decord (subset={subset})")
+        # TempMe-style dataloader
+        msvd_testset = MSVDDataset_TempMe(
+            subset=subset,
+            anno_path=args.anno_path,
+            video_path=args.video_path,
+            max_words=args.max_words,
+            tokenizer=tokenizer,
+            max_frames=args.max_frames,
+            video_framerate=args.video_framerate,
+            config=args,
+            use_enriched=False,  # Always use raw captions for validation/test
+        )
+
+        try:
+            test_sampler = torch.utils.data.distributed.DistributedSampler(msvd_testset)
+        except:
+            test_sampler = None  # cpu
+
+        dataloader_msvd = DataLoader(
+            msvd_testset,
+            batch_size=args.batch_size_val // args.world_size,
+            num_workers=args.workers,
+            shuffle=False,
+            sampler=test_sampler,
+            drop_last=False,
+        )
+    else:
+        print(f"[dataloader_msvd_test] Using original CLIPKG4Clip dataloader with OpenCV (subset={subset})")
+        # Original CLIPKG4Clip dataloader
+        msvd_testset = MSVD_DataLoader(
+            subset=subset,
+            data_path=args.data_path,
+            features_path=args.features_path,
+            max_words=args.max_words,
+            feature_framerate=args.feature_framerate,
+            tokenizer=tokenizer,
+            max_frames=args.max_frames,
+            frame_order=args.eval_frame_order,
+            slice_framepos=args.slice_framepos,
+        )
+    
+        dataloader_msvd = DataLoader(
+            msvd_testset,
+            batch_size=args.batch_size_val,
+            num_workers=args.num_thread_reader,
+            shuffle=False,
+            drop_last=False,
+        )
+    
+    return dataloader_msvd, len(msvd_testset)
 
 
 def dataloader_lsmdc_train(args, tokenizer):
