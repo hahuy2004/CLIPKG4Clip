@@ -1661,199 +1661,66 @@ def main():
     # train and eval
     ## ####################################
     if args.do_train:
-        # Check if we need to do enriched data training first
-        enriched_checkpoint = None
-        use_enriched_training = False
+        # Simple training: Just train on the dataset specified by args.enriched
+        # No automatic 2-stage training - user runs 2 separate commands
         
-        # For MSRVTT: use enriched_data_path
-        if args.datatype == "msrvtt" and args.enriched_data_path is not None:
-            if os.path.exists(args.enriched_data_path):
-                use_enriched_training = True
+        if args.datatype == "msvd":
+            # MSVD: args.enriched controls which pkl to load
+            if args.enriched == "yes":
                 if args.local_rank == 0:
-                    logger.info(f"[ENRICHED] Found enriched data at: {args.enriched_data_path}")
+                    logger.info("[MSVD] Training on ENRICHED data (enriched-caption-complete.pkl)")
             else:
                 if args.local_rank == 0:
-                    logger.warning(f"[ENRICHED] Enriched data path specified but NOT FOUND: {args.enriched_data_path}")
-                    logger.warning(f"[ENRICHED] Skipping enriched training and proceeding with original data only.")
-        # For MSVD: use enriched flag
-        elif args.datatype == "msvd" and args.enriched == "yes":
-            use_enriched_training = True
-            if args.local_rank == 0:
-                logger.info(f"[ENRICHED] Using enriched data for MSVD (enriched={args.enriched})")
-        
-        if use_enriched_training:
-            if args.local_rank == 0:
-                logger.info("="*50)
-                logger.info("STAGE 1: Training on ENRICHED DATA")
-                logger.info("="*50)
-                if args.use_tempme:
-                    logger.info("Mode: TempMe (VTRModel with LoRA + ToMe)")
-                else:
-                    logger.info("Mode: CLIPKG4Clip (Original)")
-                if args.datatype == "msrvtt":
-                    logger.info("Enriched data path: %s", args.enriched_data_path)
-                else:
-                    logger.info("Using enriched captions for MSVD")
-                logger.info("Enriched epochs: %d", args.enriched_epochs)
-                logger.info("Enriched max steps: %d", args.enriched_max_steps)
-            
-            # Temporarily swap parameters
-            # Save original values for restoration after enriched training
-            original_data_path = args.data_path
-            original_anno_path = args.anno_path if hasattr(args, 'anno_path') else None
-            original_anno_json_name = getattr(args, 'anno_json_name', 'MSRVTT_data.json')
-            original_epochs = args.epochs
-            original_max_steps = args.max_steps
-            original_enriched = None
-            
-            if args.datatype == "msrvtt":
-                # TempMe vs CLIPKG4Clip use different data loading mechanisms
-                if args.use_tempme:
-                    # TempMe mode: Uses anno_json_name parameter to specify JSON filename
-                    # Keep anno_path as folder, change only JSON filename
-                    # Always extract just the filename to avoid path duplication
-                    args.anno_json_name = os.path.basename(args.enriched_data_path)
-                    if args.local_rank == 0:
-                        logger.info("[TempMe] Switched anno_json_name to: %s", args.anno_json_name)
-                else:
-                    # CLIPKG4Clip mode: Uses data_path (direct path to pickle file)
-                    # enriched_data_path should point to enriched pickle file
-                    args.data_path = args.enriched_data_path
-                    if args.local_rank == 0:
-                        logger.info("[CLIPKG4Clip] Switched data_path to: %s", args.data_path)
-            elif args.datatype == "msvd":
-                # For MSVD, keep data_path but mark as using enriched
-                original_enriched = args.enriched
-                args.enriched = "yes"
+                    logger.info("[MSVD] Training on RAW data (raw-caption.pkl)")
+        elif args.datatype == "msrvtt":
+            # MSRVTT: args.enriched_data_path controls which JSON to load
+            if args.enriched_data_path is not None and os.path.exists(args.enriched_data_path):
                 if args.local_rank == 0:
-                    logger.info("[MSVD] Switched enriched flag to: yes")
-            
-            args.epochs = args.enriched_epochs
-            args.max_steps = args.enriched_max_steps
-            
-            # Load enriched data
-            train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
-            num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
-                                            / args.gradient_accumulation_steps) * args.epochs
-
-            coef_lr = args.coef_lr
-            optimizer, scheduler, model = prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, args.local_rank, coef_lr=coef_lr)
-
-            if args.local_rank == 0:
-                logger.info("***** Running ENRICHED data training *****")
-                logger.info("  Num examples = %d", train_length)
-                logger.info("  Batch size = %d", args.batch_size)
-                logger.info("  Num steps = %d", num_train_optimization_steps * args.gradient_accumulation_steps)
-
-            last_enriched_model_file = "None"
-            
-            global_step = 0
-            for epoch in range(0, args.enriched_epochs):
-                train_sampler.set_epoch(epoch)
-                tr_loss, global_step, early_stop = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
-                                                   scheduler, global_step, local_rank=args.local_rank, val_dataloader=val_dataloader)
-                if args.local_rank == 0:
-                    logger.info("[ENRICHED] Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.enriched_epochs, tr_loss)
-
-                    # Save checkpoint for this epoch
-                    output_model_file = save_model(epoch, args, model, optimizer, tr_loss, type_name="enriched")
-                    last_enriched_model_file = output_model_file
-                
-                # Stop if reached max_steps
-                if early_stop:
-                    break
-            
-            # Use the LAST enriched checkpoint for next stage (warm-up completed)
-            enriched_checkpoint = last_enriched_model_file
-            
-            if args.local_rank == 0:
-                logger.info("[ENRICHED] Training completed. Last checkpoint: %s", enriched_checkpoint)
-            
-            # Evaluate on validation set after STAGE 1 training
-            # Skip evaluation for MSVD + CLIP4Clip mode (only eval on original data)
-            skip_enriched_eval = (args.datatype == "msvd" and not args.use_tempme)
-            
-            if skip_enriched_eval:
-                if args.local_rank == 0:
-                    logger.info("="*50)
-                    logger.info("[MSVD CLIP4Clip] Skipping enriched evaluation - will only eval on original data")
-                    logger.info("="*50)
+                    logger.info(f"[MSRVTT] Training on ENRICHED data: {args.enriched_data_path}")
             else:
                 if args.local_rank == 0:
-                    logger.info("="*50)
-                    logger.info("STAGE 1 EVALUATION: Evaluating enriched model")
-                    logger.info("="*50)
-                
-                if val_dataloader is not None:
-                    R1_enriched = eval_epoch(args, model, val_dataloader, device, n_gpu)
-                    if args.local_rank == 0:
-                        logger.info("[ENRICHED] Validation R@1: %.2f", R1_enriched)
-                else:
-                    if args.local_rank == 0:
-                        logger.info("[ENRICHED] No validation dataloader available, skipping evaluation")
-                
-                if args.local_rank == 0:
-                    logger.info("="*50)
-            
-            # Restore original parameters for STAGE 2 training
-            args.data_path = original_data_path
-            args.epochs = original_epochs
-            args.max_steps = original_max_steps
-            
-            # Restore mode-specific parameters
-            if args.use_tempme:
-                # TempMe mode: Restore original anno_json_name
-                args.anno_json_name = original_anno_json_name
-                if args.local_rank == 0:
-                    logger.info("[TempMe] Restored anno_json_name to: %s", args.anno_json_name)
-            
-            if args.datatype == "msvd" and original_enriched is not None:
-                args.enriched = "no"  # Switch to raw captions for MSVD
-                if args.local_rank == 0:
-                    logger.info("[MSVD] Restored enriched flag to: no")
-            
-            if args.local_rank == 0:
-                logger.info("="*50)
-                logger.info("STAGE 1 COMPLETED: Using last checkpoint: %s", enriched_checkpoint)
-                logger.info("="*50)
+                    logger.info("[MSRVTT] Training on ORIGINAL data (MSRVTT_data.json)")
         
-        # STAGE 2: Train on original data
-        if args.local_rank == 0:
-            logger.info("="*50)
-            logger.info("STAGE 2: Training on ORIGINAL DATA")
-            logger.info("="*50)
-        
-        # Load original data
+        # Load training data (enriched or raw, based on current args)
         train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
+        
+        # Use enriched_epochs if training on enriched data, otherwise use args.epochs
+        if (args.datatype == "msvd" and args.enriched == "yes") or \
+           (args.datatype == "msrvtt" and args.enriched_data_path is not None and os.path.exists(args.enriched_data_path)):
+            actual_epochs = args.enriched_epochs
+            actual_max_steps = args.enriched_max_steps
+            data_type_str = "ENRICHED"
+        else:
+            actual_epochs = args.epochs
+            actual_max_steps = args.max_steps
+            data_type_str = "ORIGINAL"
+        
+        # Temporarily set epochs for optimizer calculation
+        original_epochs = args.epochs
+        original_max_steps = args.max_steps
+        args.epochs = actual_epochs
+        args.max_steps = actual_max_steps
+        
         num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
                                         / args.gradient_accumulation_steps) * args.epochs
-
-        # If we have enriched checkpoint, load weights into EXISTING model
-        if enriched_checkpoint is not None and enriched_checkpoint != "None":
-            if args.local_rank == 0:
-                logger.info("Loading enriched checkpoint weights: %s", enriched_checkpoint)
-            # Load checkpoint into existing model (preserves model architecture from STAGE 1)
-            checkpoint_state_dict = torch.load(enriched_checkpoint, map_location='cpu')
-            # Model from STAGE 1 may already be wrapped in DDP, need to unwrap first
-            if hasattr(model, 'module'):
-                model.module.load_state_dict(checkpoint_state_dict, strict=False)
-            else:
-                model.load_state_dict(checkpoint_state_dict, strict=False)
-            if args.local_rank == 0:
-                logger.info("Successfully loaded enriched weights into existing model")
         
-        # Reinitialize optimizer and scheduler for STAGE 2 (fresh training state)
+        # Prepare optimizer
         coef_lr = args.coef_lr
         optimizer, scheduler, model = prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, args.local_rank, coef_lr=coef_lr)
-
+        
         if args.local_rank == 0:
-            logger.info("***** Running ORIGINAL data training *****")
+            logger.info("="*50)
+            logger.info(f"TRAINING ON {data_type_str} DATA")
+            logger.info("="*50)
+            logger.info("***** Running training *****")
             logger.info("  Num examples = %d", train_length)
             logger.info("  Batch size = %d", args.batch_size)
+            logger.info("  Num epochs = %d", args.epochs)
             logger.info("  Num steps = %d", num_train_optimization_steps * args.gradient_accumulation_steps)
-
+        
         best_score = 0.00001
         best_output_model_file = "None"
+        
         ## ##############################################################
         # resume optimizer state besides loss to continue train
         ## ##############################################################
@@ -1867,46 +1734,62 @@ def main():
         global_step = 0
         for epoch in range(resumed_epoch, args.epochs):
             train_sampler.set_epoch(epoch)
-            tr_loss, global_step, early_stop = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
-                                               scheduler, global_step, local_rank=args.local_rank, val_dataloader=val_dataloader)
-            if args.local_rank == 0:
-                logger.info("[ORIGINAL] Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
-
-                output_model_file = save_model(epoch, args, model, optimizer, tr_loss, type_name="")
-
-                ## Run on val dataset, this process is *TIME-consuming*.
-                # logger.info("Eval on val dataset")
-                # R1 = eval_epoch(args, model, val_dataloader, device, n_gpu)
-
-                R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
-                if best_score <= R1:
-                    best_score = R1
-                    best_output_model_file = output_model_file
-                    
-                    # TempMe mode: Save best checkpoint as best.pth
-                    if args.use_tempme:
-                        model_to_save = model.module if hasattr(model, 'module') else model
-                        best_pth_file = os.path.join(args.output_dir, "best.pth")
-                        torch.save(model_to_save.state_dict(), best_pth_file)
-                        logger.info("[TempMe] Best model also saved to: {}".format(best_pth_file))
-                
-                logger.info("[ORIGINAL] The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
+            # Evaluation policy:
+            # - MSVD enriched: SKIP eval (prevents OOM) → user evaluates manually later
+            # - MSRVTT enriched/raw: EVAL every epoch (monitor performance)
+            # - MSVD raw: EVAL every epoch (normal training)
+            skip_eval_during_training = (args.datatype == "msvd" and args.enriched == "yes")
             
-            # Dừng training nếu đã đạt max_steps
+            if skip_eval_during_training:
+                # Pass None for val_dataloader to skip evaluation
+                tr_loss, global_step, early_stop = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
+                                                   scheduler, global_step, local_rank=args.local_rank, val_dataloader=None)
+            else:
+                tr_loss, global_step, early_stop = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
+                                                   scheduler, global_step, local_rank=args.local_rank, val_dataloader=val_dataloader)
+            
+            if args.local_rank == 0:
+                logger.info(f"[{data_type_str}] Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
+                
+                output_model_file = save_model(epoch, args, model, optimizer, tr_loss, type_name="")
+                
+                # Only evaluate if not skipping
+                if not skip_eval_during_training:
+                    R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
+                    if best_score <= R1:
+                        best_score = R1
+                        best_output_model_file = output_model_file
+                        
+                        # TempMe mode: Save best checkpoint as best.pth
+                        if args.use_tempme:
+                            model_to_save = model.module if hasattr(model, 'module') else model
+                            best_pth_file = os.path.join(args.output_dir, "best.pth")
+                            torch.save(model_to_save.state_dict(), best_pth_file)
+                            logger.info("[TempMe] Best model also saved to: {}".format(best_pth_file))
+                    
+                    logger.info(f"[{data_type_str}] The best model is: {best_output_model_file}, the R1 is: {best_score:.4f}")
+                else:
+                    # MSVD enriched: skip evaluation to prevent OOM
+                    logger.info(f"[{data_type_str}] Checkpoint saved: {output_model_file}")
+                    logger.info(f"[{data_type_str}] Skipping evaluation for MSVD enriched training (prevents OOM)")
+                    logger.info(f"[{data_type_str}] Run evaluation separately with: --do_eval --enriched yes --init_model {output_model_file}")
+            
+            # Stop if reached max_steps
             if early_stop:
                 break
         
+        # Restore original epochs/max_steps
+        args.epochs = original_epochs
+        args.max_steps = original_max_steps
+        
         # After training completes: ensure best.pth exists for TempMe mode
         if args.local_rank == 0 and args.use_tempme:
+            # If best.pth doesn't exist, create it from last checkpoint
             best_pth_file = os.path.join(args.output_dir, "best.pth")
-            if not os.path.exists(best_pth_file) and best_output_model_file != "None":
-                # If best.pth doesn't exist, copy from best checkpoint
-                logger.info("[TempMe] Creating best.pth from best checkpoint: {}".format(best_output_model_file))
-                model_state_dict = torch.load(best_output_model_file, map_location='cpu')
-                torch.save(model_state_dict, best_pth_file)
-                logger.info("[TempMe] Best checkpoint saved to: {}".format(best_pth_file))
-            elif os.path.exists(best_pth_file):
-                logger.info("[TempMe] Best checkpoint already exists at: {}".format(best_pth_file))
+            if not os.path.exists(best_pth_file):
+                model_to_save = model.module if hasattr(model, 'module') else model
+                torch.save(model_to_save.state_dict(), best_pth_file)
+                logger.info("[TempMe] Created best.pth from final checkpoint: {}".format(best_pth_file))
 
         ## Uncomment if want to test on the best checkpoint
         # if args.local_rank == 0:
