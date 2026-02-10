@@ -632,15 +632,18 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                 if global_step % log_step == 0 and local_rank == 0:
                     # Get ACTUAL current learning rates from optimizer (after warmup adjustment)
                     # BertAdam has 4 param_groups: [clip_decay, noclip_decay, clip_nodecay, noclip_nodecay]
-                    # which result in 2 unique LRs: base_lr (non-clip) and clip_lr (clip layers)
+                    # Config: clip_lr = args.lr * coef_lr (smaller), base_lr = args.lr (larger)
                     optimizer_lrs = [group['lr'] for group in optimizer.param_groups]
                     unique_lrs = sorted(list(set(optimizer_lrs)))
                     
                     if len(unique_lrs) == 2:
-                        # Normal case: 2 unique LRs (base and clip)
-                        current_base_lr = unique_lrs[0]  # Lower LR (non-CLIP layers)
-                        current_clip_lr = unique_lrs[1]  # Higher LR (CLIP layers)
-                        # Calculate warmup progress factor
+                        # CRITICAL: sorted() gives [smaller, larger]
+                        # Since coef_lr < 1 → clip_lr < base_lr
+                        # So: unique_lrs[0] = clip_lr (smaller), unique_lrs[1] = base_lr (larger)
+                        current_clip_lr = unique_lrs[0]  # CLIP layers (smaller due to coef_lr < 1)
+                        current_base_lr = unique_lrs[1]  # Non-CLIP layers (larger)
+                        
+                        # Calculate warmup progress factor based on base LR
                         warmup_factor = current_base_lr / args.lr if args.lr != 0 else 1.0
                         lr_str = f"base={current_base_lr:.6e}, coef={args.coef_lr:.6e}, clip={current_clip_lr:.6e}, warmup={warmup_factor:.3f}"
                     else:
