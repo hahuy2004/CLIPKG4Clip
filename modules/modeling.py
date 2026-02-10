@@ -29,7 +29,7 @@ try:
     from .module_clip import CLIP_TempMe
     from .module_tome_patch import apply_patch as tome_patch
     from .module_tome_utils import parse_r
-    from .until_module import MSE, ArcCrossEn, KL
+    from .until_module import MSE, ArcCrossEn, KL, AllGather_TempMe
     TEMPME_AVAILABLE = True
 except ImportError as e:          # <--- Sửa dòng này
     print(f"DEBUG: Lỗi import thực sự là: {e}")  # <--- Thêm dòng này
@@ -41,7 +41,10 @@ except ImportError as e:          # <--- Sửa dòng này
     parse_r = None
 
 logger = logging.getLogger(__name__)
-allgather = AllGather.apply
+# Unified allgather for both CLIPKG4Clip and TempMe modes
+# Uses AllGather_TempMe if available (supports both single and multi-GPU)
+# Falls back to AllGather if TempMe components are not installed
+allgather = AllGather_TempMe.apply if TEMPME_AVAILABLE else AllGather.apply
 allgather2 = AllGather2.apply
 
 # ============================================================================
@@ -653,6 +656,7 @@ class VTRModel(nn.Module):
         cls = self.get_text_feat(text_ids, text_mask)
         video_feat = self.get_video_feat(video, video_mask)
         
+        # TempMe: Use AllGather_TempMe for better single GPU compatibility
         cls = allgather(cls, self.config)
         video_feat = allgather(video_feat, self.config)
         torch.distributed.barrier()
