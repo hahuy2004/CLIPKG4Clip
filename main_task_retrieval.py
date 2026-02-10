@@ -630,9 +630,20 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
             else:
                 # CLIPKG4Clip mode: Original simple logging
                 if global_step % log_step == 0 and local_rank == 0:
+                    # Get learning rates from all param_groups
+                    # CLIP4Clip has 4 groups: [clip_decay, noclip_decay, clip_nodecay, noclip_nodecay]
+                    # Extract unique LRs and format as "base_lr(clip_lr)"
+                    unique_lrs = sorted(list(set([group['lr'] for group in optimizer.param_groups])))
+                    if len(unique_lrs) == 2:
+                        # Format: base_lr=X, clip_lr=Y
+                        lr_str = f"base={unique_lrs[0]:.6e}, clip={unique_lrs[1]:.6e}"
+                    else:
+                        # Fallback to simple join if not expected structure
+                        lr_str = "-".join([f"{lr:.6e}" for lr in unique_lrs])
+                    
                     logger.info("Epoch: %d/%s, Step: %d/%d, Lr: %s, Loss: %f, Time/step: %f", epoch + 1,
                                 args.epochs, step + 1,
-                                len(train_dataloader), "-".join([str('%.9f'%itm) for itm in sorted(list(set(optimizer.get_lr())))]),
+                                len(train_dataloader), lr_str,
                                 float(loss),
                                 (time.time() - start_time) / (log_step * args.gradient_accumulation_steps))
                     start_time = time.time()
@@ -1756,21 +1767,30 @@ def main():
                 logger.info("[ENRICHED] Training completed. Last checkpoint: %s", enriched_checkpoint)
             
             # Evaluate on validation set after STAGE 1 training
-            if args.local_rank == 0:
-                logger.info("="*50)
-                logger.info("STAGE 1 EVALUATION: Evaluating enriched model")
-                logger.info("="*50)
+            # Skip evaluation for MSVD + CLIP4Clip mode (only eval on original data)
+            skip_enriched_eval = (args.datatype == "msvd" and not args.use_tempme)
             
-            if val_dataloader is not None:
-                R1_enriched = eval_epoch(args, model, val_dataloader, device, n_gpu)
+            if skip_enriched_eval:
                 if args.local_rank == 0:
-                    logger.info("[ENRICHED] Validation R@1: %.2f", R1_enriched)
+                    logger.info("="*50)
+                    logger.info("[MSVD CLIP4Clip] Skipping enriched evaluation - will only eval on original data")
+                    logger.info("="*50)
             else:
                 if args.local_rank == 0:
-                    logger.info("[ENRICHED] No validation dataloader available, skipping evaluation")
-            
-            if args.local_rank == 0:
-                logger.info("="*50)
+                    logger.info("="*50)
+                    logger.info("STAGE 1 EVALUATION: Evaluating enriched model")
+                    logger.info("="*50)
+                
+                if val_dataloader is not None:
+                    R1_enriched = eval_epoch(args, model, val_dataloader, device, n_gpu)
+                    if args.local_rank == 0:
+                        logger.info("[ENRICHED] Validation R@1: %.2f", R1_enriched)
+                else:
+                    if args.local_rank == 0:
+                        logger.info("[ENRICHED] No validation dataloader available, skipping evaluation")
+                
+                if args.local_rank == 0:
+                    logger.info("="*50)
             
             # Restore original parameters for STAGE 2 training
             args.data_path = original_data_path
