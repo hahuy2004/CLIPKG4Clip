@@ -21,7 +21,7 @@ from modules.optimization import BertAdam
 # TempMe: Import AdamW optimizer, AllGather and AllGather2
 try:
     from modules.optimization_adamw import AdamW, get_cosine_schedule_with_warmup
-    from modules.until_module import AllGather, AllGather2
+    from modules.until_module import AllGather, AllGather2, AllGather_TempMe
     TEMPME_OPTIMIZER_AVAILABLE = True
 except ImportError:
     TEMPME_OPTIMIZER_AVAILABLE = False
@@ -29,6 +29,7 @@ except ImportError:
     get_cosine_schedule_with_warmup = None
     AllGather = None
     AllGather2 = None
+    AllGather_TempMe = None
 
 from util import parallel_apply, get_logger
 from dataloaders.data_dataloaders import DATALOADER_DICT
@@ -682,7 +683,7 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
         # Initialize allgather function
         if AllGather is None:
             raise RuntimeError("AllGather not available. Please check modules.until_module import.")
-        allgather = AllGather.apply
+        allgather = AllGather_TempMe.apply if AllGather_TempMe is not None else AllGather.apply
         
         batch_cls, batch_mask_t = [], []
         batch_video_feat, batch_mask_v = [], []
@@ -1085,7 +1086,7 @@ def eval_epoch_enriched(args, model, test_dataloader, device, n_gpu):
         # Initialize allgather function
         if AllGather is None:
             raise RuntimeError("AllGather not available. Please check modules.until_module import.")
-        allgather = AllGather.apply
+        allgather = AllGather_TempMe.apply if AllGather_TempMe is not None else AllGather.apply
         
         tokenizer = ClipTokenizer()
         SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
