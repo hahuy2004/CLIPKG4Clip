@@ -632,11 +632,14 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                 if global_step % log_step == 0 and local_rank == 0:
                     # Get learning rates from all param_groups
                     # CLIP4Clip has 4 groups: [clip_decay, noclip_decay, clip_nodecay, noclip_nodecay]
-                    # Extract unique LRs and format as "base_lr(clip_lr)"
+                    # Extract unique LRs and display base_lr, clip_lr, coef_lr
                     unique_lrs = sorted(list(set([group['lr'] for group in optimizer.param_groups])))
                     if len(unique_lrs) == 2:
-                        # Format: base_lr=X, clip_lr=Y
-                        lr_str = f"base={unique_lrs[0]:.6e}, clip={unique_lrs[1]:.6e}"
+                        # Format: base_lr=X, coef_lr=Y, clip_lr=Z
+                        base_lr = unique_lrs[0]
+                        clip_lr = unique_lrs[1]
+                        coef_lr = clip_lr / args.lr if args.lr != 0 else 0
+                        lr_str = f"base={base_lr:.6e}, coef={coef_lr:.6e}, clip={clip_lr:.6e}"
                     else:
                         # Fallback to simple join if not expected structure
                         lr_str = "-".join([f"{lr:.6e}" for lr in unique_lrs])
