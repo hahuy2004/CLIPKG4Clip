@@ -630,19 +630,22 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
             else:
                 # CLIPKG4Clip mode: Original simple logging
                 if global_step % log_step == 0 and local_rank == 0:
-                    # Get learning rates from all param_groups
-                    # CLIP4Clip has 4 groups: [clip_decay, noclip_decay, clip_nodecay, noclip_nodecay]
-                    # Extract unique LRs and display base_lr, clip_lr, coef_lr
-                    unique_lrs = sorted(list(set([group['lr'] for group in optimizer.param_groups])))
+                    # Get ACTUAL current learning rates from optimizer (after warmup adjustment)
+                    # BertAdam has 4 param_groups: [clip_decay, noclip_decay, clip_nodecay, noclip_nodecay]
+                    # which result in 2 unique LRs: base_lr (non-clip) and clip_lr (clip layers)
+                    optimizer_lrs = [group['lr'] for group in optimizer.param_groups]
+                    unique_lrs = sorted(list(set(optimizer_lrs)))
+                    
                     if len(unique_lrs) == 2:
-                        # Format: base_lr=X, coef_lr=Y, clip_lr=Z
-                        base_lr = unique_lrs[0]
-                        clip_lr = unique_lrs[1]
-                        coef_lr = clip_lr / args.lr if args.lr != 0 else 0
-                        lr_str = f"base={base_lr:.6e}, coef={coef_lr:.6e}, clip={clip_lr:.6e}"
+                        # Normal case: 2 unique LRs (base and clip)
+                        current_base_lr = unique_lrs[0]  # Lower LR (non-CLIP layers)
+                        current_clip_lr = unique_lrs[1]  # Higher LR (CLIP layers)
+                        # Calculate warmup progress factor
+                        warmup_factor = current_base_lr / args.lr if args.lr != 0 else 1.0
+                        lr_str = f"base={current_base_lr:.6e}, coef={args.coef_lr:.6e}, clip={current_clip_lr:.6e}, warmup={warmup_factor:.3f}"
                     else:
-                        # Fallback to simple join if not expected structure
-                        lr_str = "-".join([f"{lr:.6e}" for lr in unique_lrs])
+                        # Fallback: show all unique LRs
+                        lr_str = "LRs=" + "-".join([f"{lr:.6e}" for lr in unique_lrs])
                     
                     logger.info("Epoch: %d/%s, Step: %d/%d, Lr: %s, Loss: %f, Time/step: %f", epoch + 1,
                                 args.epochs, step + 1,
