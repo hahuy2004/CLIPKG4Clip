@@ -809,6 +809,9 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
             # ----------------------------
             # 1. cache the features
             # ----------------------------
+            logger.info('[start] extract features (CLIP4Clip mode)')
+            logger.info(f'Total batches: {len(test_dataloader)}')
+            
             for bid, batch in enumerate(test_dataloader):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, video, video_mask = batch
@@ -838,14 +841,20 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                     batch_visual_output_list.append(visual_output)
                     batch_list_v.append((video_mask,))
 
-                print("{}/{}\r".format(bid, len(test_dataloader)), end="")
+                # Progress logging
+                if (bid + 1) % 10 == 0 or (bid + 1) == len(test_dataloader):
+                    logger.info(f'Extracting features: {bid+1}/{len(test_dataloader)} batches '
+                                f'({100.0*(bid+1)/len(test_dataloader):.1f}%)')
 
             print()  # New line after progress
-            logger.info("Finished caching features. Now calculating similarity matrix...")
+            logger.info('[finish] extract features')
+            logger.info(f'Cached {len(batch_sequence_output_list)} text batches, '
+                        f'{len(batch_visual_output_list)} video batches')
             
             # ----------------------------------
             # 2. calculate the similarity
             # ----------------------------------
+            logger.info('[start] calculate the similarity')
             if n_gpu > 1:
                 device_ids = list(range(n_gpu))
                 batch_list_t_splits = []
@@ -885,7 +894,8 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                 sim_matrix = _run_on_single_gpu(model, batch_list_t, batch_list_v, batch_sequence_output_list, batch_visual_output_list)
                 sim_matrix = np.concatenate(tuple(sim_matrix), axis=0)
             
-            logger.info("Similarity matrix calculation completed!")
+            logger.info('[finish] calculate the similarity')
+            logger.info(f'Similarity matrix shape: {sim_matrix.shape}')
 
         if multi_sentence_:
             logger.info("before reshape, sim matrix size: {} x {}".format(sim_matrix.shape[0], sim_matrix.shape[1]))
@@ -899,14 +909,18 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
             logger.info("after reshape, sim matrix size: {} x {} x {}".
                         format(sim_matrix.shape[0], sim_matrix.shape[1], sim_matrix.shape[2]))
 
+            logger.info('[start] compute_metrics')
             tv_metrics = tensor_text_to_video_metrics(sim_matrix)
             vt_metrics = compute_metrics(tensor_video_to_text_sim(sim_matrix))
         else:
             logger.info("sim matrix size: {}, {}".format(sim_matrix.shape[0], sim_matrix.shape[1]))
+            logger.info('\t Length-T: {}, Length-V:{}'.format(len(sim_matrix), len(sim_matrix[0])))
+            
+            logger.info('[start] compute_metrics')
             tv_metrics = compute_metrics(sim_matrix)
             vt_metrics = compute_metrics(sim_matrix.T)
-            logger.info('\t Length-T: {}, Length-V:{}'.format(len(sim_matrix), len(sim_matrix[0])))
 
+        logger.info('[finish] compute_metrics')
         logger.info("Text-to-Video (CLIPKG4Clip):")
         logger.info('\t>>>  R@1: {:.1f} - R@5: {:.1f} - R@10: {:.1f} - Median R: {:.1f} - Mean R: {:.1f}'.
                     format(tv_metrics['R1'], tv_metrics['R5'], tv_metrics['R10'], tv_metrics['MR'], tv_metrics['MeanR']))
