@@ -329,7 +329,7 @@ def main():
     # Auto-generate output path if not specified
     if args.output_path is None:
         input_dir = os.path.dirname(args.input_path)
-        args.output_path = os.path.join(input_dir, "MSRVTT_JSFUSION_test_fqs.csv")
+        args.output_path = os.path.join(input_dir, f"MSRVTT_JSFUSION_test_fqs_k_{args.k}.csv")
     
     print("=" * 70)
     print("FARTHEST QUERY SELECTION (FQS)")

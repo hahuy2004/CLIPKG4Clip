@@ -105,3 +105,4 @@ PROPOSED_METHOD.md
 
 datasets/MSVD/pkl_to_json.py
 datasets/MSVD/check_msvd_caption_format.py
+run_all_enriched_eval.sh
